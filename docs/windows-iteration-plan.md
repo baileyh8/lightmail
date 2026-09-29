@@ -40,7 +40,7 @@
 | 10 | R-8 | Credential Manager 单条凭据最多 2560 字节（UTF-16），将来 JWT 类令牌会超限 | 平台层对超长值自动分片，读取时合并 | I2 |
 | 11 | R-9 | Windows UI 线程上同步读写 SQLite：每次事件跑 4 个查询，写信时每按一次键写一次库 | 列表查询移到后台执行；草稿自动保存加去抖 | I3 |
 | 12 | R-10 | WebView2 与 GPUI 的空域问题：GPUI 画的弹出层会被阅读器挡住 | 移除 WebView，问题随之消失 | I3 |
-| 13 | R-11 | CI 用浮动的 stable 工具链；vendored GPUI 连 examples 一起放进仓库，多了约 10 万行 | 构建脚本和 CI 固定工具链；删除 `third_party/gpui` | I3、I4 |
+| 13 | R-11 | CI 用浮动的 stable 工具链；vendored GPUI 连 examples 一起放进仓库，多了约 10 万行 | CI 固定 Rust 与 Inno Setup 版本，构建脚本检查最低版本；删除 `third_party/gpui` | I3、I4 |
 | 14 | 技术路线 | 阅读器依赖 WebView2；验收脚本检查 WebView DOM 和像素 | 原生阅读器；验收改为检查原生阅读器的渲染、图片策略和链接策略 | I3、I4 |
 | 15 | R-7 | `Problem` 事件同时承载成功状态 | 需要改导出的枚举 | I6 |
 | 16 | H-7.6 | 错误只有 `Failure { message }` 一个变体 | 需要改导出的错误类型和 Swift 代码 | I6 |
@@ -89,7 +89,7 @@ flowchart LR
 - 删除旧的 `wip/windows-support` 分支和 `apps/windows` 构建产物。
 - 从上游 `f491add` 创建 `feat/windows-gpui-kit` 并提交本计划；随后变基到上游 `5ab113a`。PR #2 只改了 Mac 钥匙串授权和 Windows 验收脚本的内存采样，不影响本计划。
 
-### I1 共享核心修复
+### I1 共享核心修复（已完成）
 
 范围：问题 2、3、4、5、6、7、8、9 的核心部分，以及原生阅读需要的 `reader_content`。
 
@@ -104,13 +104,13 @@ flowchart LR
 
 验收：`cargo test --locked --lib` 全部通过，每项修复都有回归测试；`python scripts/check.py --protocols-only` 通过；导出接口签名不变；Swift 文件无改动。
 
-### I2 Windows 平台层
+### I2 Windows 平台层（已完成）
 
 范围：问题 1、10，以及工具链固定。
 
 - `instance.rs`：打开数据库之前，对 `<数据目录>/.lightmail-instance.lock` 加操作系统独占锁，进程退出时自动释放。拿不到锁就弹出提示并退出。示例模式和真实邮箱使用不同目录，互不影响。
-- `platform.rs`：值的 UTF-16 编码超过 2560 字节时，分片保存为 `key#1..N`，主条目只存分片清单；读取时合并；覆盖和删除时清理多余分片。分片逻辑与后端分离，可以在任何平台上单元测试。
-- 构建脚本固定工具链版本，与 CI 保持一致。
+- `platform.rs`：值的 UTF-16 编码超过 2560 字节时，分片保存为 `key#<代次>.<序号>`，主条目只存分片清单；读取时合并，缺片时报错而不是返回截断的值。覆盖时先写新代次的分片，再写清单，最后删除旧分片，所以写入中途失败时旧值仍然可读。分片逻辑与后端分离，可以在任何平台上单元测试。
+- 工具链：CI 固定 Rust 1.97.0；本地构建脚本只检查不低于 1.97，不强制下载指定版本（见 I4）。
 
 验收：锁的单元测试，以及"第二个进程拿不到锁"的测试；分片的往返测试和边界测试；`cargo test -p lightmail-desktop` 通过。
 
@@ -144,7 +144,7 @@ flowchart LR
 
 验收：`cargo build --release -p lightmail-desktop` 通过；`cargo test -p lightmail-desktop` 通过；`cargo tree -p lightmail-desktop` 里没有 `wry`、`webview2-com`、`gpui 0.2.2`、`gpui-component 0.5.1`；`--demo` 模式能打开窗口，完成浏览、阅读、写信、设置的基本操作。
 
-### I4 验收脚本、CI 与文档
+### I4 验收脚本、CI 与文档（已完成）
 
 - `acceptance.rs`：去掉 WebView DOM 检查，改为检查阅读器渲染出了正文、默认图片请求数为零、链接协议被正确过滤、60 次阅读复用没有失控增长；保留剪贴板、设置、草稿持久化和凭据往返检查。
 - `scripts/check-windows.ps1`：阅读区像素检查改为针对原生阅读器；去掉 WebView2 进程树内存统计，只统计应用进程。
@@ -154,7 +154,17 @@ flowchart LR
 
 验收：本机依次跑完 `build-windows.ps1`、`package-windows.ps1`、`check-windows.ps1`。安装验收会在隔离目录里静默安装并卸载，运行前先征得同意。
 
-### I5 人工验收与真实环境
+完成情况（2026-09-30）：
+
+- 本机按 CI 的顺序跑完了构建、release 测试、打包、原生验收和隔离安装/卸载验收，全部通过。安装前确认过本机没有已安装的轻邮，所以验收不会覆盖已有安装；卸载后注册表和开始菜单没有残留。
+- 和原计划不同的地方：
+  - 本地 `build-windows.ps1` 只检查 Rust 不低于 1.97，不强制下载指定版本；固定版本只放在 CI（Rust 1.97.0，Inno Setup 6.7.1，后者是 Chocolatey 上 6.7 系列的最新版）。
+  - fxc 仍然需要：gpui-pre-windows 在构建时编译着色器，会从 `GPUI_FXC_PATH`、PATH 和 Windows SDK 注册表里找 fxc。
+  - `check-windows.ps1` 的截图改用 PrintWindow，只截本窗口，不会把压在上面的其他窗口截进去。屏幕截图原本是为了发现 WebView2 被 GPUI 绘图层遮挡，没有子窗口后不再需要。
+  - `check-windows.ps1` 每个阶段开始前清空本阶段的数据和报告目录；否则上一次运行留下的报告会让等待和采样提前完成。
+- 新增 `-SoakReads N`：按顺序打开列表里完整可见的示例邮件 N 次，记录每次阅读后的工作集和私有内存，最后静置 30 秒；私有内存净增超过 64 MiB 判失败。它属于 I5 的长时间运行项。
+
+### I5 人工验收与真实环境（自动部分已完成，其余待人工）
 
 - 中文输入法：微软拼音和至少一种第三方输入法；组合串、候选框位置、中英混输、撤销与重做。
 - Narrator：账号、邮件行、按钮、输入框的角色、名称和状态能被正确读出。
@@ -165,7 +175,13 @@ flowchart LR
 
 结果记录在 `docs/validation/`（该目录已被 `.gitignore` 忽略，不会提交）。
 
-### I6 与上游协同
+完成情况（2026-09-30）：
+
+- 长时间运行：用 `check-windows.ps1 -SoakReads 1500` 连续阅读 1500 封示例邮件后静置 30 秒。私有内存呈锯齿形，第 300 次到第 1500 次净增 6.6 MiB，工作集峰值 105.7 MiB，没有持续增长。只用了示例数据，不代表真实大邮箱。
+- 无边框窗口的命中测试和最大化/还原已自动验证；贴靠布局、双击、右键系统菜单、键盘和 Narrator 仍需人工。
+- 输入法、Narrator、150%/200% DPI 与多屏、真实服务商收发需要人手或真实账号，尚未进行。本机只验证了 100% 缩放。
+
+### I6 与上游协同（提议已整理）
 
 以下事项需要改导出接口或 Swift 代码，本分支不做，整理成提给上游的提议：
 
@@ -175,6 +191,8 @@ flowchart LR
 - 代理路由改为连接时查询。
 - 清理重复的正文缓存清理。
 - 内核级单实例保护（需要先处理 Mac 切换示例库时新旧引擎短暂并存的情况）。
+
+以上各项，连同本分支已对 Mac 生效的核心行为变化和发版时要一起更新的文档，已整理在 [windows-upstream-proposals.md](windows-upstream-proposals.md)。
 
 ## 5. 风险
 
