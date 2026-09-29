@@ -31,37 +31,37 @@ enum CredentialTests {
         let backend = Backend()
         let vault = SessionSecrets(backend: backend)
         try await withThrowingTaskGroup(of: Void.self) { group in
-          for _ in 0..<100 { group.addTask { _ = try await vault.read("account:fixture") } }
+          for _ in 0..<100 { group.addTask { _ = try vault.read("account:fixture") } }
           try await group.waitForAll()
         }
         check(backend.reads == 1 && backend.interactiveReads == 0, "100 concurrent requests reuse one silent read")
-        try await vault.save("fixture-updated", for: "account:fixture")
-        let updated = try await vault.read("account:fixture")
+        try vault.save("fixture-updated", for: "account:fixture")
+        let updated = try vault.read("account:fixture")
         check(updated == "fixture-updated" && backend.reads == 1, "save refreshes the in-memory value")
-        try await vault.remove("account:fixture")
-        let removed = try await vault.read("account:fixture")
+        try vault.remove("account:fixture")
+        let removed = try vault.read("account:fixture")
         check(removed == nil && backend.reads == 2, "remove invalidates the session value")
 
         let locked = Backend()
         locked.protected = true
         let gated = SessionSecrets(backend: locked)
-        for _ in 0..<100 { _ = try? await gated.read("account:fixture") }
-        let pending = await gated.pendingKeys()
+        for _ in 0..<100 { _ = try? gated.read("account:fixture") }
+        let pending = gated.pendingKeys()
         check(locked.reads == 1 && locked.interactiveReads == 0 && pending.count == 1,
               "blocked background retries never present authentication UI")
         locked.rejectAuthorization = true
-        _ = try? await gated.read("account:fixture", interactive: true)
-        for _ in 0..<100 { _ = try? await gated.read("account:fixture") }
+        _ = try? gated.read("account:fixture", interactive: true)
+        for _ in 0..<100 { _ = try? gated.read("account:fixture") }
         check(locked.reads == 2 && locked.interactiveReads == 1,
               "user cancellation does not trigger another automatic prompt")
         locked.rejectAuthorization = false
-        _ = try await gated.read("account:fixture", interactive: true)
-        for _ in 0..<100 { _ = try await gated.read("account:fixture") }
-        let unblocked = await gated.pendingKeys()
+        _ = try gated.read("account:fixture", interactive: true)
+        for _ in 0..<100 { _ = try gated.read("account:fixture") }
+        let unblocked = gated.pendingKeys()
         check(locked.reads == 3 && locked.interactiveReads == 2 && unblocked.isEmpty,
               "explicit retry authorizes once then reuses the session")
-        _ = try? await gated.read("translation:fixture")
-        let separate = await gated.pendingKeys()
+        _ = try? gated.read("translation:fixture")
+        let separate = gated.pendingKeys()
         check(separate == ["translation:fixture"], "different credentials retain separate authorization")
       } catch { print("FAIL credential fixtures: \(userError(error))"); exit(1) }
       finished.signal()

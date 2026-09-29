@@ -1,4 +1,4 @@
-name: macOS
+name: Native clients and shared core
 
 on:
   push:
@@ -14,6 +14,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  portable-core:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Shared service tests (no Swift or UI)
+        run: cargo test --locked --lib
+      - name: Headless consumer
+        run: cargo run --locked --example headless -- build/headless-demo
   build-and-test:
     runs-on: macos-15
     timeout-minutes: 30

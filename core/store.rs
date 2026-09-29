@@ -9,7 +9,7 @@ use std::{
 pub struct MailEngine {
     pub(crate) db: Mutex<Connection>,
     pub(crate) root: PathBuf,
-    pub(crate) runtime: tokio::runtime::Runtime,
+    pub(crate) runtime: Arc<tokio::runtime::Runtime>,
     pub(crate) pool: transport::Pool,
     pub(crate) proxies: crate::proxy::Routes,
 }
@@ -220,11 +220,7 @@ impl MailEngine {
             )
             .map_err(fail)?;
         }
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .map_err(fail)?;
+        let runtime = crate::platform::runtime();
         // Cached HTML from earlier builds had all inline styles removed.
         let render_version: Option<String> = db
             .query_row(

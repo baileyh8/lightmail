@@ -352,7 +352,7 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
-// Initial value and increment amount for handles. 
+// Initial value and increment amount for handles.
 // These ensure that SWIFT handles always have the lowest bit set
 fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
 fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
@@ -414,7 +414,13 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 
 
 // Public interface members begin here.
-
+// Magic number for the Rust proxy to call using the same mechanism as every other method,
+// to free the callback once it's dropped by Rust.
+private let IDX_CALLBACK_FREE: Int32 = 0
+// Callback return codes
+private let UNIFFI_CALLBACK_SUCCESS: Int32 = 0
+private let UNIFFI_CALLBACK_ERROR: Int32 = 1
+private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -553,66 +559,834 @@ fileprivate struct FfiConverterString: FfiConverter {
 
 
 
+public protocol ApplicationObserver: AnyObject, Sendable {
+
+    func changed(event: ApplicationEvent)
+
+}
+open class ApplicationObserverImpl: ApplicationObserver, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_lightmail_core_fn_clone_applicationobserver(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_lightmail_core_fn_free_applicationobserver(handle, $0) }
+    }
+
+
+
+
+open func changed(event: ApplicationEvent)  {try! rustCall() {
+    uniffi_lightmail_core_fn_method_applicationobserver_changed(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeApplicationEvent_lower(event),$0
+    )
+}
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceApplicationObserver {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceApplicationObserver = UniffiVTableCallbackInterfaceApplicationObserver(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeApplicationObserver.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface ApplicationObserver: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeApplicationObserver.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface ApplicationObserver: handle missing in uniffiClone")
+            }
+        },
+        changed: { (
+            uniffiHandle: UInt64,
+            event: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeApplicationObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.changed(
+                     event: try FfiConverterTypeApplicationEvent_lift(event)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceApplicationObserver> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceApplicationObserver>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitApplicationObserver() {
+    uniffi_lightmail_core_fn_init_callback_vtable_applicationobserver(UniffiCallbackInterfaceApplicationObserver.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeApplicationObserver: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<ApplicationObserver>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = ApplicationObserver
+
+    public static func lift(_ handle: UInt64) throws -> ApplicationObserver {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return ApplicationObserverImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: ApplicationObserver) -> UInt64 {
+         if let rustImpl = value as? ApplicationObserverImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ApplicationObserver {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: ApplicationObserver, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeApplicationObserver_lift(_ handle: UInt64) throws -> ApplicationObserver {
+    return try FfiConverterTypeApplicationObserver.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeApplicationObserver_lower(_ value: ApplicationObserver) -> UInt64 {
+    return FfiConverterTypeApplicationObserver.lower(value)
+}
+
+
+
+
+
+
+public protocol GoogleLoginProtocol: AnyObject, Sendable {
+
+    func authorizationUrl()  -> String
+
+    func finish(clientSecret: String) async throws
+
+}
+open class GoogleLogin: GoogleLoginProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_lightmail_core_fn_clone_googlelogin(self.handle, $0) }
+    }
+public convenience init(account: Account, clientId: String, platform: PlatformServices)throws  {
+    let handle =
+        try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_constructor_googlelogin_new(
+        FfiConverterTypeAccount_lower(account),
+        FfiConverterString.lower(clientId),
+        FfiConverterTypePlatformServices_lower(platform),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_lightmail_core_fn_free_googlelogin(handle, $0) }
+    }
+
+
+
+
+open func authorizationUrl() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_lightmail_core_fn_method_googlelogin_authorization_url(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+open func finish(clientSecret: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_googlelogin_finish(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(clientSecret)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_void,
+            completeFunc: ffi_lightmail_core_rust_future_complete_void,
+            freeFunc: ffi_lightmail_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeGoogleLogin: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = GoogleLogin
+
+    public static func lift(_ handle: UInt64) throws -> GoogleLogin {
+        return GoogleLogin(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: GoogleLogin) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> GoogleLogin {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: GoogleLogin, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGoogleLogin_lift(_ handle: UInt64) throws -> GoogleLogin {
+    return try FfiConverterTypeGoogleLogin.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeGoogleLogin_lower(_ value: GoogleLogin) -> UInt64 {
+    return FfiConverterTypeGoogleLogin.lower(value)
+}
+
+
+
+
+
+
+public protocol MailApplicationProtocol: AnyObject, Sendable {
+
+    func body(messageId: String) async throws  -> MailBody
+
+    func cachedTranslation(messageId: String, body: MailBody, configuration: TranslationConfiguration) throws  -> TranslationResult?
+
+    func cancelQueued(id: String) throws
+
+    func download(messageId: String, partId: String, destination: String) async throws
+
+    func mark(messageId: String, flag: String, value: Bool) async throws
+
+    func moveMessage(messageId: String, role: String) async throws
+
+    func queue(draft: Draft) async throws  -> Draft
+
+    func refresh() async throws
+
+    func removeAccount(accountId: String) async throws
+
+    func requestPreload(accountId: String)
+
+    func saveAccount(account: Account, password: String) async throws
+
+    func saveSystemTranslation(messageId: String, body: MailBody, configuration: TranslationConfiguration, result: TranslationResult) throws
+
+    func saveTranslationConfigurations(configurations: [TranslationConfiguration], selectedId: String) throws
+
+    func setActive(active: Bool)
+
+    /**
+     * Idempotent. Account monitoring is independent of foreground reading and sending.
+     */
+    func start() throws
+
+    func stop()
+
+    func submit(id: String) async throws  -> Draft
+
+    func sync(accountId: String, path: String?, older: Bool) async throws
+
+    func translate(messageId: String, body: MailBody, configuration: TranslationConfiguration, force: Bool, observer: TranslationObserver) async throws  -> TranslationResult
+
+    func translationConfigurations() throws  -> [TranslationConfiguration]
+
+}
+open class MailApplication: MailApplicationProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_lightmail_core_fn_clone_mailapplication(self.handle, $0) }
+    }
+public convenience init(engine: MailEngine, platform: PlatformServices, observer: ApplicationObserver) {
+    let handle =
+        try! rustCall() {
+    uniffi_lightmail_core_fn_constructor_mailapplication_new(
+        FfiConverterTypeMailEngine_lower(engine),
+        FfiConverterTypePlatformServices_lower(platform),
+        FfiConverterTypeApplicationObserver_lower(observer),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_lightmail_core_fn_free_mailapplication(handle, $0) }
+    }
+
+
+
+
+open func body(messageId: String)async throws  -> MailBody  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_body(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(messageId)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_lightmail_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_lightmail_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeMailBody_lift,
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func cachedTranslation(messageId: String, body: MailBody, configuration: TranslationConfiguration)throws  -> TranslationResult?  {
+    return try  FfiConverterOptionTypeTranslationResult.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_mailapplication_cached_translation(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(messageId),
+        FfiConverterTypeMailBody_lower(body),
+        FfiConverterTypeTranslationConfiguration_lower(configuration),$0
+    )
+})
+}
+
+open func cancelQueued(id: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_mailapplication_cancel_queued(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),$0
+    )
+}
+}
+
+open func download(messageId: String, partId: String, destination: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_download(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(messageId),FfiConverterString.lower(partId),FfiConverterString.lower(destination)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_void,
+            completeFunc: ffi_lightmail_core_rust_future_complete_void,
+            freeFunc: ffi_lightmail_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func mark(messageId: String, flag: String, value: Bool)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_mark(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(messageId),FfiConverterString.lower(flag),FfiConverterBool.lower(value)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_void,
+            completeFunc: ffi_lightmail_core_rust_future_complete_void,
+            freeFunc: ffi_lightmail_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func moveMessage(messageId: String, role: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_move_message(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(messageId),FfiConverterString.lower(role)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_void,
+            completeFunc: ffi_lightmail_core_rust_future_complete_void,
+            freeFunc: ffi_lightmail_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func queue(draft: Draft)async throws  -> Draft  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_queue(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeDraft_lower(draft)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_lightmail_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_lightmail_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeDraft_lift,
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func refresh()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_refresh(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_void,
+            completeFunc: ffi_lightmail_core_rust_future_complete_void,
+            freeFunc: ffi_lightmail_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func removeAccount(accountId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_remove_account(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(accountId)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_void,
+            completeFunc: ffi_lightmail_core_rust_future_complete_void,
+            freeFunc: ffi_lightmail_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func requestPreload(accountId: String)  {try! rustCall() {
+    uniffi_lightmail_core_fn_method_mailapplication_request_preload(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(accountId),$0
+    )
+}
+}
+
+open func saveAccount(account: Account, password: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_save_account(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeAccount_lower(account),FfiConverterString.lower(password)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_void,
+            completeFunc: ffi_lightmail_core_rust_future_complete_void,
+            freeFunc: ffi_lightmail_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func saveSystemTranslation(messageId: String, body: MailBody, configuration: TranslationConfiguration, result: TranslationResult)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_mailapplication_save_system_translation(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(messageId),
+        FfiConverterTypeMailBody_lower(body),
+        FfiConverterTypeTranslationConfiguration_lower(configuration),
+        FfiConverterTypeTranslationResult_lower(result),$0
+    )
+}
+}
+
+open func saveTranslationConfigurations(configurations: [TranslationConfiguration], selectedId: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_mailapplication_save_translation_configurations(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeTranslationConfiguration.lower(configurations),
+        FfiConverterString.lower(selectedId),$0
+    )
+}
+}
+
+open func setActive(active: Bool)  {try! rustCall() {
+    uniffi_lightmail_core_fn_method_mailapplication_set_active(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(active),$0
+    )
+}
+}
+
+    /**
+     * Idempotent. Account monitoring is independent of foreground reading and sending.
+     */
+open func start()throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_mailapplication_start(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+
+open func stop()  {try! rustCall() {
+    uniffi_lightmail_core_fn_method_mailapplication_stop(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+
+open func submit(id: String)async throws  -> Draft  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_submit(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(id)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_lightmail_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_lightmail_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeDraft_lift,
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func sync(accountId: String, path: String?, older: Bool)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_sync(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(accountId),FfiConverterOptionString.lower(path),FfiConverterBool.lower(older)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_void,
+            completeFunc: ffi_lightmail_core_rust_future_complete_void,
+            freeFunc: ffi_lightmail_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func translate(messageId: String, body: MailBody, configuration: TranslationConfiguration, force: Bool, observer: TranslationObserver)async throws  -> TranslationResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_translate(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(messageId),FfiConverterTypeMailBody_lower(body),FfiConverterTypeTranslationConfiguration_lower(configuration),FfiConverterBool.lower(force),FfiConverterTypeTranslationObserver_lower(observer)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_lightmail_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_lightmail_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeTranslationResult_lift,
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func translationConfigurations()throws  -> [TranslationConfiguration]  {
+    return try  FfiConverterSequenceTypeTranslationConfiguration.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_mailapplication_translation_configurations(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMailApplication: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MailApplication
+
+    public static func lift(_ handle: UInt64) throws -> MailApplication {
+        return MailApplication(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MailApplication) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MailApplication {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MailApplication, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMailApplication_lift(_ handle: UInt64) throws -> MailApplication {
+    return try FfiConverterTypeMailApplication.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMailApplication_lower(_ value: MailApplication) -> UInt64 {
+    return FfiConverterTypeMailApplication.lower(value)
+}
+
+
+
+
+
+
 public protocol MailEngineProtocol: AnyObject, Sendable {
-    
+
     func accounts() throws  -> [Account]
-    
+
     func cachedBody(messageId: String) throws  -> MailBody?
-    
-    func cancelQueued(id: String) throws 
-    
-    func changeFlag(messageId: String, credential: String, flag: String, value: Bool) throws 
-    
-    func clearBodyCache() throws 
-    
-    func configureProxy(destination: String, kind: String, host: String, port: UInt16) throws 
-    
-    func deleteDraft(id: String) throws 
-    
-    func downloadAttachment(messageId: String, partId: String, credential: String, destination: String) throws 
-    
+
+    func cancelQueued(id: String) throws
+
+    func changeFlag(messageId: String, credential: String, flag: String, value: Bool) throws
+
+    func clearBodyCache() throws
+
+    func configureProxy(destination: String, kind: String, host: String, port: UInt16) throws
+
+    func deleteDraft(id: String) throws
+
+    func downloadAttachment(messageId: String, partId: String, credential: String, destination: String) throws
+
     func drafts() throws  -> [Draft]
-    
-    func failUnsubmitted(id: String, message: String) throws 
-    
+
+    func failUnsubmitted(id: String, message: String) throws
+
     func fetchBody(messageId: String, credential: String) throws  -> MailBody
-    
+
     func folders(accountId: String) throws  -> [Folder]
-    
+
     func importEml(path: String, accountId: String) throws  -> MessageSummary
-    
+
     func listMessages(query: MessageQuery) throws  -> [MessageSummary]
-    
-    func moveMessage(messageId: String, credential: String, role: String) throws 
-    
-    func preloadBody(messageId: String, credential: String) throws 
-    
+
+    func moveMessage(messageId: String, credential: String, role: String) throws
+
+    func preloadBody(messageId: String, credential: String) throws
+
     func pruneBodyCache(accountId: String) throws  -> UInt32
-    
+
     func recentMessages(accountId: String) throws  -> [MessageSummary]
-    
-    func removeAccount(accountId: String) throws 
-    
-    func saveAccount(account: Account) throws 
-    
+
+    func removeAccount(accountId: String) throws
+
+    func saveAccount(account: Account) throws
+
     func saveDraft(draft: Draft) throws  -> Draft
-    
-    func seedDemo() throws 
-    
+
+    func seedDemo() throws
+
     func sendDraft(id: String, credential: String) throws  -> Draft
-    
-    func setSetting(key: String, value: String) throws 
-    
+
+    func setSetting(key: String, value: String) throws
+
     func setting(key: String) throws  -> String?
-    
+
     func storageInfo() throws  -> StorageInfo
-    
+
     func syncAccount(accountId: String, credential: String) throws  -> SyncResult
-    
+
     func syncFolder(accountId: String, credential: String, path: String, older: Bool) throws  -> SyncResult
-    
+
     func waitForChange(accountId: String, credential: String) throws  -> Bool
-    
+
 }
 open class MailEngine: MailEngineProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -672,9 +1446,9 @@ public convenience init(directory: String)throws  {
         try! rustCall { uniffi_lightmail_core_fn_free_mailengine(handle, $0) }
     }
 
-    
 
-    
+
+
 open func accounts()throws  -> [Account]  {
     return try  FfiConverterSequenceTypeAccount.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_accounts(
@@ -682,7 +1456,7 @@ open func accounts()throws  -> [Account]  {
     )
 })
 }
-    
+
 open func cachedBody(messageId: String)throws  -> MailBody?  {
     return try  FfiConverterOptionTypeMailBody.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_cached_body(
@@ -691,7 +1465,7 @@ open func cachedBody(messageId: String)throws  -> MailBody?  {
     )
 })
 }
-    
+
 open func cancelQueued(id: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_cancel_queued(
             self.uniffiCloneHandle(),
@@ -699,7 +1473,7 @@ open func cancelQueued(id: String)throws   {try rustCallWithError(FfiConverterTy
     )
 }
 }
-    
+
 open func changeFlag(messageId: String, credential: String, flag: String, value: Bool)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_change_flag(
             self.uniffiCloneHandle(),
@@ -710,14 +1484,14 @@ open func changeFlag(messageId: String, credential: String, flag: String, value:
     )
 }
 }
-    
+
 open func clearBodyCache()throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_clear_body_cache(
             self.uniffiCloneHandle(),$0
     )
 }
 }
-    
+
 open func configureProxy(destination: String, kind: String, host: String, port: UInt16)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_configure_proxy(
             self.uniffiCloneHandle(),
@@ -728,7 +1502,7 @@ open func configureProxy(destination: String, kind: String, host: String, port: 
     )
 }
 }
-    
+
 open func deleteDraft(id: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_delete_draft(
             self.uniffiCloneHandle(),
@@ -736,7 +1510,7 @@ open func deleteDraft(id: String)throws   {try rustCallWithError(FfiConverterTyp
     )
 }
 }
-    
+
 open func downloadAttachment(messageId: String, partId: String, credential: String, destination: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_download_attachment(
             self.uniffiCloneHandle(),
@@ -747,7 +1521,7 @@ open func downloadAttachment(messageId: String, partId: String, credential: Stri
     )
 }
 }
-    
+
 open func drafts()throws  -> [Draft]  {
     return try  FfiConverterSequenceTypeDraft.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_drafts(
@@ -755,7 +1529,7 @@ open func drafts()throws  -> [Draft]  {
     )
 })
 }
-    
+
 open func failUnsubmitted(id: String, message: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_fail_unsubmitted(
             self.uniffiCloneHandle(),
@@ -764,7 +1538,7 @@ open func failUnsubmitted(id: String, message: String)throws   {try rustCallWith
     )
 }
 }
-    
+
 open func fetchBody(messageId: String, credential: String)throws  -> MailBody  {
     return try  FfiConverterTypeMailBody_lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_fetch_body(
@@ -774,7 +1548,7 @@ open func fetchBody(messageId: String, credential: String)throws  -> MailBody  {
     )
 })
 }
-    
+
 open func folders(accountId: String)throws  -> [Folder]  {
     return try  FfiConverterSequenceTypeFolder.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_folders(
@@ -783,7 +1557,7 @@ open func folders(accountId: String)throws  -> [Folder]  {
     )
 })
 }
-    
+
 open func importEml(path: String, accountId: String)throws  -> MessageSummary  {
     return try  FfiConverterTypeMessageSummary_lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_import_eml(
@@ -793,7 +1567,7 @@ open func importEml(path: String, accountId: String)throws  -> MessageSummary  {
     )
 })
 }
-    
+
 open func listMessages(query: MessageQuery)throws  -> [MessageSummary]  {
     return try  FfiConverterSequenceTypeMessageSummary.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_list_messages(
@@ -802,7 +1576,7 @@ open func listMessages(query: MessageQuery)throws  -> [MessageSummary]  {
     )
 })
 }
-    
+
 open func moveMessage(messageId: String, credential: String, role: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_move_message(
             self.uniffiCloneHandle(),
@@ -812,7 +1586,7 @@ open func moveMessage(messageId: String, credential: String, role: String)throws
     )
 }
 }
-    
+
 open func preloadBody(messageId: String, credential: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_preload_body(
             self.uniffiCloneHandle(),
@@ -821,7 +1595,7 @@ open func preloadBody(messageId: String, credential: String)throws   {try rustCa
     )
 }
 }
-    
+
 open func pruneBodyCache(accountId: String)throws  -> UInt32  {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_prune_body_cache(
@@ -830,7 +1604,7 @@ open func pruneBodyCache(accountId: String)throws  -> UInt32  {
     )
 })
 }
-    
+
 open func recentMessages(accountId: String)throws  -> [MessageSummary]  {
     return try  FfiConverterSequenceTypeMessageSummary.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_recent_messages(
@@ -839,7 +1613,7 @@ open func recentMessages(accountId: String)throws  -> [MessageSummary]  {
     )
 })
 }
-    
+
 open func removeAccount(accountId: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_remove_account(
             self.uniffiCloneHandle(),
@@ -847,7 +1621,7 @@ open func removeAccount(accountId: String)throws   {try rustCallWithError(FfiCon
     )
 }
 }
-    
+
 open func saveAccount(account: Account)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_save_account(
             self.uniffiCloneHandle(),
@@ -855,7 +1629,7 @@ open func saveAccount(account: Account)throws   {try rustCallWithError(FfiConver
     )
 }
 }
-    
+
 open func saveDraft(draft: Draft)throws  -> Draft  {
     return try  FfiConverterTypeDraft_lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_save_draft(
@@ -864,14 +1638,14 @@ open func saveDraft(draft: Draft)throws  -> Draft  {
     )
 })
 }
-    
+
 open func seedDemo()throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_seed_demo(
             self.uniffiCloneHandle(),$0
     )
 }
 }
-    
+
 open func sendDraft(id: String, credential: String)throws  -> Draft  {
     return try  FfiConverterTypeDraft_lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_send_draft(
@@ -881,7 +1655,7 @@ open func sendDraft(id: String, credential: String)throws  -> Draft  {
     )
 })
 }
-    
+
 open func setSetting(key: String, value: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_set_setting(
             self.uniffiCloneHandle(),
@@ -890,7 +1664,7 @@ open func setSetting(key: String, value: String)throws   {try rustCallWithError(
     )
 }
 }
-    
+
 open func setting(key: String)throws  -> String?  {
     return try  FfiConverterOptionString.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_setting(
@@ -899,7 +1673,7 @@ open func setting(key: String)throws  -> String?  {
     )
 })
 }
-    
+
 open func storageInfo()throws  -> StorageInfo  {
     return try  FfiConverterTypeStorageInfo_lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_storage_info(
@@ -907,7 +1681,7 @@ open func storageInfo()throws  -> StorageInfo  {
     )
 })
 }
-    
+
 open func syncAccount(accountId: String, credential: String)throws  -> SyncResult  {
     return try  FfiConverterTypeSyncResult_lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_sync_account(
@@ -917,7 +1691,7 @@ open func syncAccount(accountId: String, credential: String)throws  -> SyncResul
     )
 })
 }
-    
+
 open func syncFolder(accountId: String, credential: String, path: String, older: Bool)throws  -> SyncResult  {
     return try  FfiConverterTypeSyncResult_lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_sync_folder(
@@ -929,7 +1703,7 @@ open func syncFolder(accountId: String, credential: String, path: String, older:
     )
 })
 }
-    
+
 open func waitForChange(accountId: String, credential: String)throws  -> Bool  {
     return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
     uniffi_lightmail_core_fn_method_mailengine_wait_for_change(
@@ -939,9 +1713,9 @@ open func waitForChange(accountId: String, credential: String)throws  -> Bool  {
     )
 })
 }
-    
 
-    
+
+
 }
 
 
@@ -988,6 +1762,811 @@ public func FfiConverterTypeMailEngine_lower(_ value: MailEngine) -> UInt64 {
 
 
 
+
+
+public protocol PlatformServices: AnyObject, Sendable {
+
+    /**
+     * Must not display an interactive authentication prompt.
+     */
+    func readSecret(key: String) throws  -> String?
+
+    func writeSecret(key: String, value: String) throws
+
+    func removeSecret(key: String) throws
+
+    func proxyFor(host: String) throws  -> ProxyRoute
+
+}
+open class PlatformServicesImpl: PlatformServices, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_lightmail_core_fn_clone_platformservices(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_lightmail_core_fn_free_platformservices(handle, $0) }
+    }
+
+
+
+
+    /**
+     * Must not display an interactive authentication prompt.
+     */
+open func readSecret(key: String)throws  -> String?  {
+    return try  FfiConverterOptionString.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_platformservices_read_secret(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),$0
+    )
+})
+}
+
+open func writeSecret(key: String, value: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_platformservices_write_secret(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),
+        FfiConverterString.lower(value),$0
+    )
+}
+}
+
+open func removeSecret(key: String)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_platformservices_remove_secret(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),$0
+    )
+}
+}
+
+open func proxyFor(host: String)throws  -> ProxyRoute  {
+    return try  FfiConverterTypeProxyRoute_lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_platformservices_proxy_for(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(host),$0
+    )
+})
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfacePlatformServices {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfacePlatformServices = UniffiVTableCallbackInterfacePlatformServices(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypePlatformServices.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface PlatformServices: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypePlatformServices.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface PlatformServices: handle missing in uniffiClone")
+            }
+        },
+        readSecret: { (
+            uniffiHandle: UInt64,
+            key: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> String? in
+                guard let uniffiObj = try? FfiConverterTypePlatformServices.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.readSecret(
+                     key: try FfiConverterString.lift(key)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterOptionString.lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeMailError_lower
+            )
+        },
+        writeSecret: { (
+            uniffiHandle: UInt64,
+            key: RustBuffer,
+            value: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypePlatformServices.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.writeSecret(
+                     key: try FfiConverterString.lift(key),
+                     value: try FfiConverterString.lift(value)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeMailError_lower
+            )
+        },
+        removeSecret: { (
+            uniffiHandle: UInt64,
+            key: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypePlatformServices.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.removeSecret(
+                     key: try FfiConverterString.lift(key)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeMailError_lower
+            )
+        },
+        proxyFor: { (
+            uniffiHandle: UInt64,
+            host: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> ProxyRoute in
+                guard let uniffiObj = try? FfiConverterTypePlatformServices.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.proxyFor(
+                     host: try FfiConverterString.lift(host)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeProxyRoute_lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeMailError_lower
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfacePlatformServices> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfacePlatformServices>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitPlatformServices() {
+    uniffi_lightmail_core_fn_init_callback_vtable_platformservices(UniffiCallbackInterfacePlatformServices.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePlatformServices: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<PlatformServices>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = PlatformServices
+
+    public static func lift(_ handle: UInt64) throws -> PlatformServices {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return PlatformServicesImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: PlatformServices) -> UInt64 {
+         if let rustImpl = value as? PlatformServicesImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PlatformServices {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: PlatformServices, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformServices_lift(_ handle: UInt64) throws -> PlatformServices {
+    return try FfiConverterTypePlatformServices.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformServices_lower(_ value: PlatformServices) -> UInt64 {
+    return FfiConverterTypePlatformServices.lower(value)
+}
+
+
+
+
+
+
+public protocol ProtectedTextProtocol: AnyObject, Sendable {
+
+    func protectedText()  -> String
+
+    func restore(text: String) throws  -> String
+
+}
+open class ProtectedText: ProtectedTextProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_lightmail_core_fn_clone_protectedtext(self.handle, $0) }
+    }
+public convenience init(text: String, prefix: String) {
+    let handle =
+        try! rustCall() {
+    uniffi_lightmail_core_fn_constructor_protectedtext_new(
+        FfiConverterString.lower(text),
+        FfiConverterString.lower(prefix),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_lightmail_core_fn_free_protectedtext(handle, $0) }
+    }
+
+
+
+
+open func protectedText() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_lightmail_core_fn_method_protectedtext_protected_text(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+open func restore(text: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_protectedtext_restore(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(text),$0
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProtectedText: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = ProtectedText
+
+    public static func lift(_ handle: UInt64) throws -> ProtectedText {
+        return ProtectedText(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: ProtectedText) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProtectedText {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: ProtectedText, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProtectedText_lift(_ handle: UInt64) throws -> ProtectedText {
+    return try FfiConverterTypeProtectedText.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProtectedText_lower(_ value: ProtectedText) -> UInt64 {
+    return FfiConverterTypeProtectedText.lower(value)
+}
+
+
+
+
+
+
+public protocol TranslationClientProtocol: AnyObject, Sendable {
+
+    func test(configuration: TranslationConfiguration, key: String) async throws  -> String
+
+    func translate(subject: String, markdown: String, hash: String, configuration: TranslationConfiguration, key: String, observer: TranslationObserver) async throws  -> TranslationResult
+
+}
+open class TranslationClient: TranslationClientProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_lightmail_core_fn_clone_translationclient(self.handle, $0) }
+    }
+public convenience init(platform: PlatformServices) {
+    let handle =
+        try! rustCall() {
+    uniffi_lightmail_core_fn_constructor_translationclient_new(
+        FfiConverterTypePlatformServices_lower(platform),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_lightmail_core_fn_free_translationclient(handle, $0) }
+    }
+
+
+
+
+open func test(configuration: TranslationConfiguration, key: String)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_translationclient_test(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeTranslationConfiguration_lower(configuration),FfiConverterString.lower(key)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_lightmail_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_lightmail_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func translate(subject: String, markdown: String, hash: String, configuration: TranslationConfiguration, key: String, observer: TranslationObserver)async throws  -> TranslationResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_translationclient_translate(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(subject),FfiConverterString.lower(markdown),FfiConverterString.lower(hash),FfiConverterTypeTranslationConfiguration_lower(configuration),FfiConverterString.lower(key),FfiConverterTypeTranslationObserver_lower(observer)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_lightmail_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_lightmail_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeTranslationResult_lift,
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTranslationClient: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = TranslationClient
+
+    public static func lift(_ handle: UInt64) throws -> TranslationClient {
+        return TranslationClient(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: TranslationClient) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TranslationClient {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: TranslationClient, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationClient_lift(_ handle: UInt64) throws -> TranslationClient {
+    return try FfiConverterTypeTranslationClient.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationClient_lower(_ value: TranslationClient) -> UInt64 {
+    return FfiConverterTypeTranslationClient.lower(value)
+}
+
+
+
+
+
+
+public protocol TranslationObserver: AnyObject, Sendable {
+
+    func progress(done: UInt32, total: UInt32, blocks: [TranslationBlock])
+
+}
+open class TranslationObserverImpl: TranslationObserver, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_lightmail_core_fn_clone_translationobserver(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_lightmail_core_fn_free_translationobserver(handle, $0) }
+    }
+
+
+
+
+open func progress(done: UInt32, total: UInt32, blocks: [TranslationBlock])  {try! rustCall() {
+    uniffi_lightmail_core_fn_method_translationobserver_progress(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(done),
+        FfiConverterUInt32.lower(total),
+        FfiConverterSequenceTypeTranslationBlock.lower(blocks),$0
+    )
+}
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceTranslationObserver {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceTranslationObserver = UniffiVTableCallbackInterfaceTranslationObserver(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeTranslationObserver.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface TranslationObserver: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeTranslationObserver.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface TranslationObserver: handle missing in uniffiClone")
+            }
+        },
+        progress: { (
+            uniffiHandle: UInt64,
+            done: UInt32,
+            total: UInt32,
+            blocks: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeTranslationObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.progress(
+                     done: try FfiConverterUInt32.lift(done),
+                     total: try FfiConverterUInt32.lift(total),
+                     blocks: try FfiConverterSequenceTypeTranslationBlock.lift(blocks)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceTranslationObserver> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceTranslationObserver>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitTranslationObserver() {
+    uniffi_lightmail_core_fn_init_callback_vtable_translationobserver(UniffiCallbackInterfaceTranslationObserver.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTranslationObserver: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<TranslationObserver>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = TranslationObserver
+
+    public static func lift(_ handle: UInt64) throws -> TranslationObserver {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return TranslationObserverImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: TranslationObserver) -> UInt64 {
+         if let rustImpl = value as? TranslationObserverImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TranslationObserver {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: TranslationObserver, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationObserver_lift(_ handle: UInt64) throws -> TranslationObserver {
+    return try FfiConverterTypeTranslationObserver.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationObserver_lower(_ value: TranslationObserver) -> UInt64 {
+    return FfiConverterTypeTranslationObserver.lower(value)
+}
+
+
+
+
 public struct Account: Equatable, Hashable {
     public var id: String
     public var name: String
@@ -1019,9 +2598,9 @@ public struct Account: Equatable, Hashable {
         self.sentMode = sentMode
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1035,17 +2614,17 @@ public struct FfiConverterTypeAccount: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Account {
         return
             try Account(
-                id: FfiConverterString.read(from: &buf), 
-                name: FfiConverterString.read(from: &buf), 
-                address: FfiConverterString.read(from: &buf), 
-                provider: FfiConverterString.read(from: &buf), 
-                imapHost: FfiConverterString.read(from: &buf), 
-                imapPort: FfiConverterUInt16.read(from: &buf), 
-                smtpHost: FfiConverterString.read(from: &buf), 
-                smtpPort: FfiConverterUInt16.read(from: &buf), 
-                authKind: FfiConverterString.read(from: &buf), 
-                color: FfiConverterString.read(from: &buf), 
-                enabled: FfiConverterBool.read(from: &buf), 
+                id: FfiConverterString.read(from: &buf),
+                name: FfiConverterString.read(from: &buf),
+                address: FfiConverterString.read(from: &buf),
+                provider: FfiConverterString.read(from: &buf),
+                imapHost: FfiConverterString.read(from: &buf),
+                imapPort: FfiConverterUInt16.read(from: &buf),
+                smtpHost: FfiConverterString.read(from: &buf),
+                smtpPort: FfiConverterUInt16.read(from: &buf),
+                authKind: FfiConverterString.read(from: &buf),
+                color: FfiConverterString.read(from: &buf),
+                enabled: FfiConverterBool.read(from: &buf),
                 sentMode: FfiConverterString.read(from: &buf)
         )
     }
@@ -1082,6 +2661,68 @@ public func FfiConverterTypeAccount_lower(_ value: Account) -> RustBuffer {
 }
 
 
+public struct ApplicationEvent: Equatable, Hashable {
+    public var kind: ApplicationEventKind
+    public var accountId: String
+    public var message: String
+    public var failed: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(kind: ApplicationEventKind, accountId: String, message: String, failed: Bool) {
+        self.kind = kind
+        self.accountId = accountId
+        self.message = message
+        self.failed = failed
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ApplicationEvent: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeApplicationEvent: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ApplicationEvent {
+        return
+            try ApplicationEvent(
+                kind: FfiConverterTypeApplicationEventKind.read(from: &buf),
+                accountId: FfiConverterString.read(from: &buf),
+                message: FfiConverterString.read(from: &buf),
+                failed: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ApplicationEvent, into buf: inout [UInt8]) {
+        FfiConverterTypeApplicationEventKind.write(value.kind, into: &buf)
+        FfiConverterString.write(value.accountId, into: &buf)
+        FfiConverterString.write(value.message, into: &buf)
+        FfiConverterBool.write(value.failed, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeApplicationEvent_lift(_ buf: RustBuffer) throws -> ApplicationEvent {
+    return try FfiConverterTypeApplicationEvent.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeApplicationEvent_lower(_ value: ApplicationEvent) -> RustBuffer {
+    return FfiConverterTypeApplicationEvent.lower(value)
+}
+
+
 public struct AttachmentInfo: Equatable, Hashable {
     public var partId: String
     public var filename: String
@@ -1097,9 +2738,9 @@ public struct AttachmentInfo: Equatable, Hashable {
         self.size = size
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1113,9 +2754,9 @@ public struct FfiConverterTypeAttachmentInfo: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AttachmentInfo {
         return
             try AttachmentInfo(
-                partId: FfiConverterString.read(from: &buf), 
-                filename: FfiConverterString.read(from: &buf), 
-                mimeType: FfiConverterString.read(from: &buf), 
+                partId: FfiConverterString.read(from: &buf),
+                filename: FfiConverterString.read(from: &buf),
+                mimeType: FfiConverterString.read(from: &buf),
                 size: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -1181,9 +2822,9 @@ public struct Draft: Equatable, Hashable {
         self.sendAfter = sendAfter
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1197,20 +2838,20 @@ public struct FfiConverterTypeDraft: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Draft {
         return
             try Draft(
-                id: FfiConverterString.read(from: &buf), 
-                accountId: FfiConverterString.read(from: &buf), 
-                to: FfiConverterString.read(from: &buf), 
-                cc: FfiConverterString.read(from: &buf), 
-                bcc: FfiConverterString.read(from: &buf), 
-                subject: FfiConverterString.read(from: &buf), 
-                body: FfiConverterString.read(from: &buf), 
-                attachmentPaths: FfiConverterSequenceString.read(from: &buf), 
-                replyToMessageId: FfiConverterString.read(from: &buf), 
-                references: FfiConverterString.read(from: &buf), 
-                status: FfiConverterString.read(from: &buf), 
-                lastError: FfiConverterString.read(from: &buf), 
-                createdAt: FfiConverterInt64.read(from: &buf), 
-                updatedAt: FfiConverterInt64.read(from: &buf), 
+                id: FfiConverterString.read(from: &buf),
+                accountId: FfiConverterString.read(from: &buf),
+                to: FfiConverterString.read(from: &buf),
+                cc: FfiConverterString.read(from: &buf),
+                bcc: FfiConverterString.read(from: &buf),
+                subject: FfiConverterString.read(from: &buf),
+                body: FfiConverterString.read(from: &buf),
+                attachmentPaths: FfiConverterSequenceString.read(from: &buf),
+                replyToMessageId: FfiConverterString.read(from: &buf),
+                references: FfiConverterString.read(from: &buf),
+                status: FfiConverterString.read(from: &buf),
+                lastError: FfiConverterString.read(from: &buf),
+                createdAt: FfiConverterInt64.read(from: &buf),
+                updatedAt: FfiConverterInt64.read(from: &buf),
                 sendAfter: FfiConverterInt64.read(from: &buf)
         )
     }
@@ -1271,9 +2912,9 @@ public struct Folder: Equatable, Hashable {
         self.totalCount = totalCount
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1287,12 +2928,12 @@ public struct FfiConverterTypeFolder: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Folder {
         return
             try Folder(
-                id: FfiConverterString.read(from: &buf), 
-                accountId: FfiConverterString.read(from: &buf), 
-                path: FfiConverterString.read(from: &buf), 
-                name: FfiConverterString.read(from: &buf), 
-                role: FfiConverterString.read(from: &buf), 
-                unreadCount: FfiConverterUInt32.read(from: &buf), 
+                id: FfiConverterString.read(from: &buf),
+                accountId: FfiConverterString.read(from: &buf),
+                path: FfiConverterString.read(from: &buf),
+                name: FfiConverterString.read(from: &buf),
+                role: FfiConverterString.read(from: &buf),
+                unreadCount: FfiConverterUInt32.read(from: &buf),
                 totalCount: FfiConverterUInt32.read(from: &buf)
         )
     }
@@ -1343,9 +2984,9 @@ public struct MailBody: Equatable, Hashable {
         self.contentHash = contentHash
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1359,11 +3000,11 @@ public struct FfiConverterTypeMailBody: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MailBody {
         return
             try MailBody(
-                messageId: FfiConverterString.read(from: &buf), 
-                text: FfiConverterString.read(from: &buf), 
-                markdown: FfiConverterString.read(from: &buf), 
-                html: FfiConverterString.read(from: &buf), 
-                attachments: FfiConverterSequenceTypeAttachmentInfo.read(from: &buf), 
+                messageId: FfiConverterString.read(from: &buf),
+                text: FfiConverterString.read(from: &buf),
+                markdown: FfiConverterString.read(from: &buf),
+                html: FfiConverterString.read(from: &buf),
+                attachments: FfiConverterSequenceTypeAttachmentInfo.read(from: &buf),
                 contentHash: FfiConverterString.read(from: &buf)
         )
     }
@@ -1415,9 +3056,9 @@ public struct MessageQuery: Equatable, Hashable {
         self.offset = offset
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1431,12 +3072,12 @@ public struct FfiConverterTypeMessageQuery: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MessageQuery {
         return
             try MessageQuery(
-                accountId: FfiConverterString.read(from: &buf), 
-                folderId: FfiConverterString.read(from: &buf), 
-                scope: FfiConverterString.read(from: &buf), 
-                search: FfiConverterString.read(from: &buf), 
-                unreadOnly: FfiConverterBool.read(from: &buf), 
-                limit: FfiConverterUInt32.read(from: &buf), 
+                accountId: FfiConverterString.read(from: &buf),
+                folderId: FfiConverterString.read(from: &buf),
+                scope: FfiConverterString.read(from: &buf),
+                search: FfiConverterString.read(from: &buf),
+                unreadOnly: FfiConverterBool.read(from: &buf),
+                limit: FfiConverterUInt32.read(from: &buf),
                 offset: FfiConverterUInt32.read(from: &buf)
         )
     }
@@ -1515,9 +3156,9 @@ public struct MessageSummary: Equatable, Hashable {
         self.hasAttachments = hasAttachments
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1531,25 +3172,25 @@ public struct FfiConverterTypeMessageSummary: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MessageSummary {
         return
             try MessageSummary(
-                id: FfiConverterString.read(from: &buf), 
-                accountId: FfiConverterString.read(from: &buf), 
-                folderId: FfiConverterString.read(from: &buf), 
-                uid: FfiConverterUInt32.read(from: &buf), 
-                uidValidity: FfiConverterUInt32.read(from: &buf), 
-                canonicalId: FfiConverterString.read(from: &buf), 
-                threadId: FfiConverterString.read(from: &buf), 
-                messageId: FfiConverterString.read(from: &buf), 
-                subject: FfiConverterString.read(from: &buf), 
-                fromName: FfiConverterString.read(from: &buf), 
-                fromAddress: FfiConverterString.read(from: &buf), 
-                replyToAddress: FfiConverterString.read(from: &buf), 
-                toAddresses: FfiConverterString.read(from: &buf), 
-                ccAddresses: FfiConverterString.read(from: &buf), 
-                timestamp: FfiConverterInt64.read(from: &buf), 
-                snippet: FfiConverterString.read(from: &buf), 
-                unread: FfiConverterBool.read(from: &buf), 
-                starred: FfiConverterBool.read(from: &buf), 
-                size: FfiConverterUInt64.read(from: &buf), 
+                id: FfiConverterString.read(from: &buf),
+                accountId: FfiConverterString.read(from: &buf),
+                folderId: FfiConverterString.read(from: &buf),
+                uid: FfiConverterUInt32.read(from: &buf),
+                uidValidity: FfiConverterUInt32.read(from: &buf),
+                canonicalId: FfiConverterString.read(from: &buf),
+                threadId: FfiConverterString.read(from: &buf),
+                messageId: FfiConverterString.read(from: &buf),
+                subject: FfiConverterString.read(from: &buf),
+                fromName: FfiConverterString.read(from: &buf),
+                fromAddress: FfiConverterString.read(from: &buf),
+                replyToAddress: FfiConverterString.read(from: &buf),
+                toAddresses: FfiConverterString.read(from: &buf),
+                ccAddresses: FfiConverterString.read(from: &buf),
+                timestamp: FfiConverterInt64.read(from: &buf),
+                snippet: FfiConverterString.read(from: &buf),
+                unread: FfiConverterBool.read(from: &buf),
+                starred: FfiConverterBool.read(from: &buf),
+                size: FfiConverterUInt64.read(from: &buf),
                 hasAttachments: FfiConverterBool.read(from: &buf)
         )
     }
@@ -1594,6 +3235,64 @@ public func FfiConverterTypeMessageSummary_lower(_ value: MessageSummary) -> Rus
 }
 
 
+public struct ProxyRoute: Equatable, Hashable {
+    public var kind: String
+    public var host: String
+    public var port: UInt16
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(kind: String, host: String, port: UInt16) {
+        self.kind = kind
+        self.host = host
+        self.port = port
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ProxyRoute: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProxyRoute: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProxyRoute {
+        return
+            try ProxyRoute(
+                kind: FfiConverterString.read(from: &buf),
+                host: FfiConverterString.read(from: &buf),
+                port: FfiConverterUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProxyRoute, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterString.write(value.host, into: &buf)
+        FfiConverterUInt16.write(value.port, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProxyRoute_lift(_ buf: RustBuffer) throws -> ProxyRoute {
+    return try FfiConverterTypeProxyRoute.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProxyRoute_lower(_ value: ProxyRoute) -> RustBuffer {
+    return FfiConverterTypeProxyRoute.lower(value)
+}
+
+
 public struct StorageInfo: Equatable, Hashable {
     public var messageCount: UInt64
     public var bodyCount: UInt64
@@ -1609,9 +3308,9 @@ public struct StorageInfo: Equatable, Hashable {
         self.databaseBytes = databaseBytes
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1625,9 +3324,9 @@ public struct FfiConverterTypeStorageInfo: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> StorageInfo {
         return
             try StorageInfo(
-                messageCount: FfiConverterUInt64.read(from: &buf), 
-                bodyCount: FfiConverterUInt64.read(from: &buf), 
-                cacheBytes: FfiConverterUInt64.read(from: &buf), 
+                messageCount: FfiConverterUInt64.read(from: &buf),
+                bodyCount: FfiConverterUInt64.read(from: &buf),
+                cacheBytes: FfiConverterUInt64.read(from: &buf),
                 databaseBytes: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -1669,9 +3368,9 @@ public struct SyncResult: Equatable, Hashable {
         self.message = message
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1685,8 +3384,8 @@ public struct FfiConverterTypeSyncResult: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SyncResult {
         return
             try SyncResult(
-                added: FfiConverterUInt32.read(from: &buf), 
-                folders: FfiConverterUInt32.read(from: &buf), 
+                added: FfiConverterUInt32.read(from: &buf),
+                folders: FfiConverterUInt32.read(from: &buf),
                 message: FfiConverterString.read(from: &buf)
         )
     }
@@ -1714,22 +3413,475 @@ public func FfiConverterTypeSyncResult_lower(_ value: SyncResult) -> RustBuffer 
 }
 
 
+public struct TranslationBlock: Equatable, Hashable {
+    public var id: UInt32
+    public var text: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: UInt32, text: String) {
+        self.id = id
+        self.text = text
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension TranslationBlock: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTranslationBlock: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TranslationBlock {
+        return
+            try TranslationBlock(
+                id: FfiConverterUInt32.read(from: &buf),
+                text: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TranslationBlock, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.id, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationBlock_lift(_ buf: RustBuffer) throws -> TranslationBlock {
+    return try FfiConverterTypeTranslationBlock.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationBlock_lower(_ value: TranslationBlock) -> RustBuffer {
+    return FfiConverterTypeTranslationBlock.lower(value)
+}
+
+
+public struct TranslationConfiguration: Equatable, Hashable {
+    public var id: String
+    public var name: String
+    public var baseUrl: String
+    public var model: String
+    public var targetLanguage: String
+    public var stream: Bool
+    public var outputFormat: String
+    public var inputCharacters: UInt32
+    public var glossary: String
+    public var engine: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, name: String, baseUrl: String, model: String, targetLanguage: String, stream: Bool, outputFormat: String, inputCharacters: UInt32, glossary: String, engine: String) {
+        self.id = id
+        self.name = name
+        self.baseUrl = baseUrl
+        self.model = model
+        self.targetLanguage = targetLanguage
+        self.stream = stream
+        self.outputFormat = outputFormat
+        self.inputCharacters = inputCharacters
+        self.glossary = glossary
+        self.engine = engine
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension TranslationConfiguration: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTranslationConfiguration: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TranslationConfiguration {
+        return
+            try TranslationConfiguration(
+                id: FfiConverterString.read(from: &buf),
+                name: FfiConverterString.read(from: &buf),
+                baseUrl: FfiConverterString.read(from: &buf),
+                model: FfiConverterString.read(from: &buf),
+                targetLanguage: FfiConverterString.read(from: &buf),
+                stream: FfiConverterBool.read(from: &buf),
+                outputFormat: FfiConverterString.read(from: &buf),
+                inputCharacters: FfiConverterUInt32.read(from: &buf),
+                glossary: FfiConverterString.read(from: &buf),
+                engine: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TranslationConfiguration, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.baseUrl, into: &buf)
+        FfiConverterString.write(value.model, into: &buf)
+        FfiConverterString.write(value.targetLanguage, into: &buf)
+        FfiConverterBool.write(value.stream, into: &buf)
+        FfiConverterString.write(value.outputFormat, into: &buf)
+        FfiConverterUInt32.write(value.inputCharacters, into: &buf)
+        FfiConverterString.write(value.glossary, into: &buf)
+        FfiConverterString.write(value.engine, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationConfiguration_lift(_ buf: RustBuffer) throws -> TranslationConfiguration {
+    return try FfiConverterTypeTranslationConfiguration.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationConfiguration_lower(_ value: TranslationConfiguration) -> RustBuffer {
+    return FfiConverterTypeTranslationConfiguration.lower(value)
+}
+
+
+public struct TranslationResult: Equatable, Hashable {
+    public var subject: String
+    public var blocks: [TranslationBlock]
+    public var sourceHash: String
+    public var model: String
+    public var inputTokens: UInt64?
+    public var outputTokens: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(subject: String, blocks: [TranslationBlock], sourceHash: String, model: String, inputTokens: UInt64?, outputTokens: UInt64?) {
+        self.subject = subject
+        self.blocks = blocks
+        self.sourceHash = sourceHash
+        self.model = model
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension TranslationResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTranslationResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TranslationResult {
+        return
+            try TranslationResult(
+                subject: FfiConverterString.read(from: &buf),
+                blocks: FfiConverterSequenceTypeTranslationBlock.read(from: &buf),
+                sourceHash: FfiConverterString.read(from: &buf),
+                model: FfiConverterString.read(from: &buf),
+                inputTokens: FfiConverterOptionUInt64.read(from: &buf),
+                outputTokens: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TranslationResult, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.subject, into: &buf)
+        FfiConverterSequenceTypeTranslationBlock.write(value.blocks, into: &buf)
+        FfiConverterString.write(value.sourceHash, into: &buf)
+        FfiConverterString.write(value.model, into: &buf)
+        FfiConverterOptionUInt64.write(value.inputTokens, into: &buf)
+        FfiConverterOptionUInt64.write(value.outputTokens, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationResult_lift(_ buf: RustBuffer) throws -> TranslationResult {
+    return try FfiConverterTypeTranslationResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTranslationResult_lower(_ value: TranslationResult) -> RustBuffer {
+    return FfiConverterTypeTranslationResult.lower(value)
+}
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum ApplicationEventKind: Equatable, Hashable {
+
+    case dataChanged
+    case syncStarted
+    case syncFinished
+    case draftChanged
+    case problem
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ApplicationEventKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeApplicationEventKind: FfiConverterRustBuffer {
+    typealias SwiftType = ApplicationEventKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ApplicationEventKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .dataChanged
+
+        case 2: return .syncStarted
+
+        case 3: return .syncFinished
+
+        case 4: return .draftChanged
+
+        case 5: return .problem
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ApplicationEventKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .dataChanged:
+            writeInt(&buf, Int32(1))
+
+
+        case .syncStarted:
+            writeInt(&buf, Int32(2))
+
+
+        case .syncFinished:
+            writeInt(&buf, Int32(3))
+
+
+        case .draftChanged:
+            writeInt(&buf, Int32(4))
+
+
+        case .problem:
+            writeInt(&buf, Int32(5))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeApplicationEventKind_lift(_ buf: RustBuffer) throws -> ApplicationEventKind {
+    return try FfiConverterTypeApplicationEventKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeApplicationEventKind_lower(_ value: ApplicationEventKind) -> RustBuffer {
+    return FfiConverterTypeApplicationEventKind.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum ComposeMode: Equatable, Hashable {
+
+    case new
+    case reply
+    case replyAll
+    case forward
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ComposeMode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeComposeMode: FfiConverterRustBuffer {
+    typealias SwiftType = ComposeMode
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ComposeMode {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .new
+
+        case 2: return .reply
+
+        case 3: return .replyAll
+
+        case 4: return .forward
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ComposeMode, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .new:
+            writeInt(&buf, Int32(1))
+
+
+        case .reply:
+            writeInt(&buf, Int32(2))
+
+
+        case .replyAll:
+            writeInt(&buf, Int32(3))
+
+
+        case .forward:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeComposeMode_lift(_ buf: RustBuffer) throws -> ComposeMode {
+    return try FfiConverterTypeComposeMode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeComposeMode_lower(_ value: ComposeMode) -> RustBuffer {
+    return FfiConverterTypeComposeMode.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum ExportMode: Equatable, Hashable {
+
+    case original
+    case translated
+    case bilingual
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ExportMode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeExportMode: FfiConverterRustBuffer {
+    typealias SwiftType = ExportMode
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ExportMode {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .original
+
+        case 2: return .translated
+
+        case 3: return .bilingual
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ExportMode, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .original:
+            writeInt(&buf, Int32(1))
+
+
+        case .translated:
+            writeInt(&buf, Int32(2))
+
+
+        case .bilingual:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExportMode_lift(_ buf: RustBuffer) throws -> ExportMode {
+    return try FfiConverterTypeExportMode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeExportMode_lower(_ value: ExportMode) -> RustBuffer {
+    return FfiConverterTypeExportMode.lower(value)
+}
+
+
+
 public enum MailError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
-    
-    
+
+
     case Failure(message: String
     )
 
-    
 
-    
 
-    
+
+
+
     public var errorDescription: String? {
         String(reflecting: self)
     }
-    
+
 }
 
 #if compiler(>=6)
@@ -1746,9 +3898,9 @@ public struct FfiConverterTypeMailError: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        
 
-        
+
+
         case 1: return .Failure(
             message: try FfiConverterString.read(from: &buf)
             )
@@ -1760,14 +3912,14 @@ public struct FfiConverterTypeMailError: FfiConverterRustBuffer {
     public static func write(_ value: MailError, into buf: inout [UInt8]) {
         switch value {
 
-        
 
-        
-        
+
+
+
         case let .Failure(message):
             writeInt(&buf, Int32(1))
             FfiConverterString.write(message, into: &buf)
-            
+
         }
     }
 }
@@ -1785,6 +3937,30 @@ public func FfiConverterTypeMailError_lift(_ buf: RustBuffer) throws -> MailErro
 #endif
 public func FfiConverterTypeMailError_lower(_ value: MailError) -> RustBuffer {
     return FfiConverterTypeMailError.lower(value)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = UInt64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
 }
 
 #if swift(>=5.8)
@@ -1830,6 +4006,54 @@ fileprivate struct FfiConverterOptionTypeMailBody: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeMailBody.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeMessageSummary: FfiConverterRustBuffer {
+    typealias SwiftType = MessageSummary?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMessageSummary.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMessageSummary.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeTranslationResult: FfiConverterRustBuffer {
+    typealias SwiftType = TranslationResult?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeTranslationResult.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeTranslationResult.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -1985,6 +4209,163 @@ fileprivate struct FfiConverterSequenceTypeMessageSummary: FfiConverterRustBuffe
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeTranslationBlock: FfiConverterRustBuffer {
+    typealias SwiftType = [TranslationBlock]
+
+    public static func write(_ value: [TranslationBlock], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeTranslationBlock.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [TranslationBlock] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [TranslationBlock]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeTranslationBlock.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeTranslationConfiguration: FfiConverterRustBuffer {
+    typealias SwiftType = [TranslationConfiguration]
+
+    public static func write(_ value: [TranslationConfiguration], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeTranslationConfiguration.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [TranslationConfiguration] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [TranslationConfiguration]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeTranslationConfiguration.read(from: &buf))
+        }
+        return seq
+    }
+}
+private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
+private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
+
+fileprivate let uniffiContinuationHandleMap = UniffiHandleMap<UnsafeContinuation<Int8, Never>>()
+
+fileprivate func uniffiRustCallAsync<F, T>(
+    rustFutureFunc: () -> UInt64,
+    pollFunc: (UInt64, @escaping UniffiRustFutureContinuationCallback, UInt64) -> (),
+    completeFunc: (UInt64, UnsafeMutablePointer<RustCallStatus>) -> F,
+    freeFunc: (UInt64) -> (),
+    liftFunc: (F) throws -> T,
+    errorHandler: ((RustBuffer) throws -> Swift.Error)?
+) async throws -> T {
+    // Make sure to call the ensure init function since future creation doesn't have a
+    // RustCallStatus param, so doesn't use makeRustCall()
+    uniffiEnsureLightmailCoreInitialized()
+    let rustFuture = rustFutureFunc()
+    defer {
+        freeFunc(rustFuture)
+    }
+    var pollResult: Int8;
+    repeat {
+        pollResult = await withUnsafeContinuation {
+            pollFunc(
+                rustFuture,
+                { handle, pollResult in
+                    uniffiFutureContinuationCallback(handle: handle, pollResult: pollResult)
+                },
+                uniffiContinuationHandleMap.insert(obj: $0)
+            )
+        }
+    } while pollResult != UNIFFI_RUST_FUTURE_POLL_READY
+
+    return try liftFunc(makeRustCall(
+        { completeFunc(rustFuture, $0) },
+        errorHandler: errorHandler
+    ))
+}
+
+// Callback handlers for an async calls.  These are invoked by Rust when the future is ready.  They
+// lift the return value or error and resume the suspended function.
+fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: Int8) {
+    if let continuation = try? uniffiContinuationHandleMap.remove(handle: handle) {
+        continuation.resume(returning: pollResult)
+    } else {
+        print("uniffiFutureContinuationCallback invalid handle")
+    }
+}
+public func composeDraft(account: Account, message: MessageSummary?, body: MailBody?, mode: ComposeMode, dateLabel: String) -> Draft  {
+    return try!  FfiConverterTypeDraft_lift(try! rustCall() {
+    uniffi_lightmail_core_fn_func_compose_draft(
+        FfiConverterTypeAccount_lower(account),
+        FfiConverterOptionTypeMessageSummary.lower(message),
+        FfiConverterOptionTypeMailBody.lower(body),
+        FfiConverterTypeComposeMode_lower(mode),
+        FfiConverterString.lower(dateLabel),$0
+    )
+})
+}
+public func exportMarkdown(message: MessageSummary, body: MailBody, translation: TranslationResult?, mode: ExportMode, dateLabel: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_func_export_markdown(
+        FfiConverterTypeMessageSummary_lower(message),
+        FfiConverterTypeMailBody_lower(body),
+        FfiConverterOptionTypeTranslationResult.lower(translation),
+        FfiConverterTypeExportMode_lower(mode),
+        FfiConverterString.lower(dateLabel),$0
+    )
+})
+}
+public func translationBlocks(markdown: String) -> [TranslationBlock]  {
+    return try!  FfiConverterSequenceTypeTranslationBlock.lift(try! rustCall() {
+    uniffi_lightmail_core_fn_func_translation_blocks(
+        FfiConverterString.lower(markdown),$0
+    )
+})
+}
+public func translationCacheKey(accountId: String, body: MailBody, configuration: TranslationConfiguration, subject: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_lightmail_core_fn_func_translation_cache_key(
+        FfiConverterString.lower(accountId),
+        FfiConverterTypeMailBody_lower(body),
+        FfiConverterTypeTranslationConfiguration_lower(configuration),
+        FfiConverterString.lower(subject),$0
+    )
+})
+}
+public func translationEndpoint(base: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_func_translation_endpoint(
+        FfiConverterString.lower(base),$0
+    )
+})
+}
+public func translationMarkdown(result: TranslationResult) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_lightmail_core_fn_func_translation_markdown(
+        FfiConverterTypeTranslationResult_lower(result),$0
+    )
+})
+}
+public func validateTranslationConfiguration(configuration: TranslationConfiguration)throws   {try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_func_validate_translation_configuration(
+        FfiConverterTypeTranslationConfiguration_lower(configuration),$0
+    )
+}
+}
+
 private enum InitializationResult {
     case ok
     case contractVersionMismatch
@@ -1999,6 +4380,108 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_lightmail_core_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_lightmail_core_checksum_func_compose_draft() != 15203) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_func_export_markdown() != 25506) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_func_translation_blocks() != 57519) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_func_translation_cache_key() != 16074) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_func_translation_endpoint() != 58783) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_func_translation_markdown() != 50648) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_func_validate_translation_configuration() != 4082) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_applicationobserver_changed() != 42479) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_body() != 11386) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_cached_translation() != 6796) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_cancel_queued() != 10344) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_download() != 25861) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_mark() != 24560) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_move_message() != 16163) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_queue() != 48700) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_refresh() != 48558) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_remove_account() != 10783) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_request_preload() != 24084) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_save_account() != 24359) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_save_system_translation() != 13886) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_save_translation_configurations() != 41049) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_set_active() != 54577) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_start() != 4265) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_stop() != 12729) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_submit() != 29554) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_sync() != 24172) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_translate() != 63173) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_translation_configurations() != 60960) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_googlelogin_authorization_url() != 5215) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_googlelogin_finish() != 3271) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_platformservices_read_secret() != 15195) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_platformservices_write_secret() != 37304) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_platformservices_remove_secret() != 49059) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_platformservices_proxy_for() != 30779) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_lightmail_core_checksum_method_mailengine_accounts() != 23520) {
         return InitializationResult.apiChecksumMismatch
@@ -2087,10 +4570,40 @@ private let initializationResult: InitializationResult = {
     if (uniffi_lightmail_core_checksum_method_mailengine_wait_for_change() != 26714) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_lightmail_core_checksum_method_protectedtext_protected_text() != 43550) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_protectedtext_restore() != 31039) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_translationclient_test() != 28644) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_translationclient_translate() != 39687) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_translationobserver_progress() != 41893) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_constructor_mailapplication_new() != 12526) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_constructor_googlelogin_new() != 29082) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_lightmail_core_checksum_constructor_mailengine_new() != 26221) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_lightmail_core_checksum_constructor_protectedtext_new() != 13242) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_constructor_translationclient_new() != 35650) {
+        return InitializationResult.apiChecksumMismatch
+    }
 
+    uniffiCallbackInitApplicationObserver()
+    uniffiCallbackInitPlatformServices()
+    uniffiCallbackInitTranslationObserver()
     return InitializationResult.ok
 }()
 

@@ -1010,6 +1010,19 @@ pub async fn attachment(
     result
 }
 pub async fn send(e: &MailEngine, id: &str, credential: &str) -> Result<Draft> {
+    send_inner(e, id, credential, true).await
+}
+
+pub(crate) async fn send_pending(e: &MailEngine, id: &str, credential: &str) -> Result<Draft> {
+    send_inner(e, id, credential, false).await
+}
+
+async fn send_inner(
+    e: &MailEngine,
+    id: &str,
+    credential: &str,
+    allow_draft: bool,
+) -> Result<Draft> {
     use lettre::{
         message::{header::ContentType, Attachment, Mailbox, MultiPart, SinglePart},
         transport::smtp::{
@@ -1023,7 +1036,7 @@ pub async fn send(e: &MailEngine, id: &str, credential: &str) -> Result<Draft> {
         .into_iter()
         .find(|d| d.id == id)
         .ok_or_else(|| fail("草稿不存在"))?;
-    if !["draft", "queued", "failed"].contains(&d.status.as_str()) {
+    if !["queued", "failed"].contains(&d.status.as_str()) && !(allow_draft && d.status == "draft") {
         return Err(fail("此邮件正在发送、已发送或结果待确认，不能重复提交"));
     }
     let a = e.account(&d.account_id)?;
@@ -1140,6 +1153,19 @@ pub async fn send(e: &MailEngine, id: &str, credential: &str) -> Result<Draft> {
             return Err(fail("发送状态已经改变"));
         }
     }
+    // Cancellation can happen after SMTP DATA reached the server. Preserve the
+    // ambiguity on disk immediately; never turn an interrupted submission into a retry.
+    struct Submission<'a>(&'a MailEngine, Draft);
+    impl Drop for Submission<'_> {
+        fn drop(&mut self) {
+            self.1.status = "delivery_unknown".into();
+            self.1.last_error = "发送过程已中断，结果待确认，请先检查已发送".into();
+            if let (Ok(db), Ok(data)) = (self.0.connection(), serde_json::to_string(&self.1)) {
+                let _ = db.execute("UPDATE drafts SET status='delivery_unknown',data=?1 WHERE id=?2 AND status='sending'", params![data,self.1.id]);
+            }
+        }
+    }
+    let _submission = Submission(e, d.clone());
     match tokio::time::timeout(Duration::from_secs(75), smtp.send(message.clone())).await {
         Ok(Ok(_)) => {
             d.status = "accepted".into();

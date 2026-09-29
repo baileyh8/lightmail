@@ -41,11 +41,9 @@ import NaturalLanguage
   @Published var storage: StorageInfo?
   @Published var systemTranslationConfiguration: TranslationSession.Configuration?
   private(set) var engine: MailEngine
-  private let credentials = CredentialProvider()
-  private var monitorTasks: [String: Task<Void, Never>] = [:]
-  private var periodicTask: Task<Void, Never>?
-  private var preloadTasks: [String: Task<Void, Never>] = [:]
-  private var preloadRequested: Set<String> = []
+  private(set) var application: MailApplication!
+  private var coreObserver: CoreApplicationObserver?
+  private var coreReloadTask: Task<Void, Never>?
   private var bodyTask: Task<Void, Never>?
   private var systemConfigurationSeed = TranslationSession.Configuration()
   private var translationTask: Task<Void, Never>?
@@ -76,8 +74,49 @@ import NaturalLanguage
       engine = try MailEngine(
         directory: root.appendingPathComponent(initialDemo ? "Preview" : "Mail").path)
     } catch { fatalError("无法打开轻邮本地数据库：\(error.localizedDescription)") }
+    connectApplication()
     if startAutomatically { Task { await start() } }
   }
+  deinit { application?.stop() }
+  private func connectApplication() {
+    let observer = CoreApplicationObserver(generation: engineGeneration)
+    observer.store = self
+    coreObserver = observer
+    application = MailApplication(engine: engine, platform: MacPlatformServices(), observer: observer)
+  }
+  func coreChanged(_ event: ApplicationEvent, generation: UUID) async {
+    guard generation == engineGeneration else { return }
+    switch event.kind {
+    case .syncStarted:
+      syncing.insert(event.accountId)
+      accountStatus[event.accountId] = "同步中…"
+    case .syncFinished: syncing.remove(event.accountId)
+    case .problem:
+      accountStatus[event.accountId] = event.message
+      syncErrors[event.accountId] = event.failed ? event.message : nil
+    case .draftChanged:
+      if !event.message.isEmpty {
+        if event.failed { errorMessage = event.message } else { notify(event.message) }
+      }
+      fallthrough
+    case .dataChanged:
+      coreReloadTask?.cancel()
+      coreReloadTask = Task { [weak self] in
+        try? await Task.sleep(for: .milliseconds(40))
+        guard !Task.isCancelled, let self, self.engineGeneration == generation else { return }
+        await self.reload()
+        // Background revalidation can replace an older HTML cache while this
+        // message remains selected. Updating the reader is presentation work.
+        if !self.bodyLoading, let selected = self.selectedID,
+          let cached = try? await self.call({ try $0.cachedBody(messageId: selected) }),
+          !Task.isCancelled, self.engineGeneration == generation, self.selectedID == selected {
+          self.body = cached
+          self.bodyError = nil
+        }
+      }
+    }
+  }
+  func setActive(_ active: Bool) { application.setActive(active: active) }
   var selectedMessage: MessageSummary? {
     messages.first { $0.id == selectedID }
       ?? (openedMessage?.id == selectedID ? openedMessage : nil)
@@ -109,12 +148,7 @@ import NaturalLanguage
   func start() async {
     do {
       if demoMode { try await call { try $0.seedDemo() } }
-      if let json = try await call({ try $0.setting(key: "translation-configs") }),
-        let data = json.data(using: .utf8)
-      {
-        translationConfigs =
-          (try? JSONDecoder().decode([TranslationConfiguration].self, from: data)) ?? []
-      }
+      translationConfigs = try application.translationConfigurations()
       selectedTranslationID = (try await call { try $0.setting(key: "translation-default") }) ?? ""
       googleClientID = (try await call { try $0.setting(key: "google-client-id") }) ?? ""
       await reload()
@@ -124,7 +158,6 @@ import NaturalLanguage
       }
       await refreshCredentialRequests()
       beginMonitoring()
-      for account in accounts where account.enabled { schedulePreload(account) }
     } catch { errorMessage = userError(error) }
   }
   func reload() async {
@@ -208,16 +241,9 @@ import NaturalLanguage
     bodyError = nil
     defer { if selectionGeneration == request { bodyLoading = false } }
     do {
-      if let cached = try await call({ try $0.cachedBody(messageId: m.id) }) {
-        if selectionGeneration == request { body = cached }
-      } else {
-        guard let account = accounts.first(where: { $0.id == m.accountId }) else { return }
-        let token = try await credential(account)
-        guard !Task.isCancelled, selectionGeneration == request else { return }
-        let fetched = try await call { try $0.fetchBody(messageId: m.id, credential: token) }
-        guard selectionGeneration == request else { return }
-        body = fetched
-      }
+      let fetched = try await application.body(messageId: m.id)
+      guard !Task.isCancelled, selectionGeneration == request else { return }
+      body = fetched
       guard !Task.isCancelled, selectionGeneration == request else { return }
       // Receiving the body ends the loading state. Flag sync is independent.
       bodyLoading = false
@@ -225,24 +251,9 @@ import NaturalLanguage
       guard !Task.isCancelled, selectionGeneration == request else { return }
       if m.unread { Task { await mark(m, flag: "seen", value: true, quiet: true) } }
       if let config = translationConfig, let body {
-        let key = TranslationService.cacheKey(
-          accountID: m.accountId, body: body, configuration: config, subject: m.subject)
-        if let data = try await call({ try $0.setting(key: key) })?.data(using: .utf8),
-          selectionGeneration == request
-        {
-          translation = try? JSONDecoder().decode(TranslationResult.self, from: data)
-        }
+        translation = try application.cachedTranslation(messageId: m.id, body: body, configuration: config)
       }
     } catch { if selectionGeneration == request { bodyError = userError(error) } }
-  }
-  func credential(_ account: Account) async throws -> String {
-    if account.provider == "demo" || account.provider == "local" { return "" }
-    for host in Set([account.imapHost, account.smtpHost]) where !host.isEmpty {
-      let route = try await Task.detached { try MailProxyRoute.resolve(host: host) }.value
-      try await call { try $0.configureProxy(destination: host, kind: route.kind, host: route.host, port: route.port) }
-    }
-    return try await credentials.credential(
-      account: account, clientID: googleClientID)
   }
   func refreshCredentialRequests() async {
     credentialRequests = await SecretStore.pendingKeys()
@@ -256,7 +267,7 @@ import NaturalLanguage
       for key in credentialRequests { try await SecretStore.authorize(key) }
       await refreshCredentialRequests()
       refresh()
-      for account in accounts where account.enabled { schedulePreload(account) }
+
       if bodyError != nil { await loadSelectedBody() }
     } catch {
       credentialAuthorizationError = "授权尚未完成，可再次点击；后台不会重复弹窗。"
@@ -265,47 +276,14 @@ import NaturalLanguage
   }
   func refresh() {
     Task {
-      await withTaskGroup(of: Void.self) { group in
-        for account in accounts where account.enabled { group.addTask { await self.sync(account) } }
-      }
-      await reload()
+      do { try await application.refresh() }
+      catch { errorMessage = userError(error) }
     }
   }
   func sync(_ account: Account, folderID: String = "", older: Bool = false) async {
-    guard account.enabled, !syncing.contains(account.id) else { return }
-    let generation = engineGeneration
-    syncing.insert(account.id)
-    accountStatus[account.id] = "同步中…"
-    defer { if engineGeneration == generation { syncing.remove(account.id) } }
-    do {
-      let token = try await credential(account)
-      let result: SyncResult
-      if !folderID.isEmpty, let folder = folders.first(where: { $0.id == folderID }) {
-        result = try await call {
-          try $0.syncFolder(
-            accountId: account.id, credential: token, path: folder.path, older: older)
-        }
-      } else {
-        // Publish the inbox and start warming recent bodies before scanning other folders.
-        _ = try await call { try $0.syncFolder(accountId: account.id, credential: token, path: "INBOX", older: false) }
-        guard engineGeneration == generation else { return }
-        _ = try await call { try $0.pruneBodyCache(accountId: account.id) }
-        await reload()
-        schedulePreload(account)
-        result = try await call { try $0.syncAccount(accountId: account.id, credential: token) }
-      }
-      guard engineGeneration == generation else { return }
-      accountStatus[account.id] = result.message
-      syncErrors[account.id] = nil
-      _ = try await call { try $0.pruneBodyCache(accountId: account.id) }
-      await reload()
-      schedulePreload(account)
-    } catch {
-      if engineGeneration == generation {
-        accountStatus[account.id] = userError(error)
-        syncErrors[account.id] = userError(error)
-      }
-    }
+    let path = folders.first { $0.id == folderID }?.path
+    do { try await application.sync(accountId: account.id, path: path, older: older) }
+    catch { /* The service publishes account-specific failure state. */ }
   }
   func loadOlder() {
     Task {
@@ -332,90 +310,22 @@ import NaturalLanguage
     }
   }
   func beginMonitoring() {
-    periodicTask?.cancel()
-    monitorTasks.values.forEach { $0.cancel() }
-    monitorTasks = [:]
-    preloadTasks.values.forEach { $0.cancel() }
-    preloadTasks = [:]
-    preloadRequested = []
     guard !demoMode else { return }
-    for account in accounts where account.enabled {
-      monitorTasks[account.id] = Task { [weak self] in
-        var failures = 0
-        while !Task.isCancelled {
-          guard let self else { return }
-          do {
-            let token = try await self.credential(account)
-            let changed = try await self.call {
-              try $0.waitForChange(accountId: account.id, credential: token)
-            }
-            if Task.isCancelled { return }
-            failures = 0
-            if changed { await self.sync(account) } else { try await Task.sleep(for: .seconds(15)) }
-          } catch {
-            failures += 1
-            if !Task.isCancelled { self.accountStatus[account.id] = userError(error) }
-            try? await Task.sleep(for: .seconds(min(300, 15 * (1 << min(failures, 4)))))
-          }
-        }
-      }
-    }
-    periodicTask = Task { [weak self] in
-      while !Task.isCancelled {
-        guard let self else { return }
-        self.refresh()
-        try? await Task.sleep(for: .seconds(NSApp.isActive ? 30 : 120))
-      }
-    }
-  }
-  func schedulePreload(_ account: Account) {
-    guard account.enabled, !["demo", "local"].contains(account.provider), !demoMode else { return }
-    preloadRequested.insert(account.id)
-    guard preloadTasks[account.id] == nil else { return }
-    let generation = engineGeneration
-    preloadTasks[account.id] = Task { [weak self] in
-      guard let self else { return }
-      defer { if self.engineGeneration == generation { self.preloadTasks[account.id] = nil } }
-      while self.preloadRequested.remove(account.id) != nil && !Task.isCancelled {
-        do {
-          let token = try await self.credential(account)
-          let recent = try await self.call { try $0.recentMessages(accountId: account.id) }
-          for message in recent {
-            guard !Task.isCancelled, self.engineGeneration == generation else { return }
-            if self.preloadRequested.contains(account.id) { break }
-            // A failed message must not prevent the rest of the window warming.
-            try? await self.call { try $0.preloadBody(messageId: message.id, credential: token) }
-            guard !Task.isCancelled, self.engineGeneration == generation else { return }
-            await self.reloadMessages()
-            if self.selectedID == message.id,
-              let refreshed = try? await self.call({ try $0.cachedBody(messageId: message.id) }),
-              self.selectedID == message.id {
-              self.body = refreshed
-            }
-          }
-          _ = try await self.call { try $0.pruneBodyCache(accountId: account.id) }
-          self.storage = try await self.call { try $0.storageInfo() }
-        } catch { break }
-      }
-    }
+    application.setActive(active: NSApp.isActive)
+    do { try application.start() } catch { errorMessage = userError(error) }
   }
   func mark(_ message: MessageSummary, flag: String, value: Bool, quiet: Bool = false) async {
     do {
-      guard let account = accounts.first(where: { $0.id == message.accountId }) else { return }
-      let token = try await credential(account)
-      try await call {
-        try $0.changeFlag(messageId: message.id, credential: token, flag: flag, value: value)
-      }
+      try await application.mark(messageId: message.id, flag: flag, value: value)
       await reloadMessages()
       folders = try await call { try $0.folders(accountId: "") }
     } catch { if !quiet { errorMessage = userError(error) } }
   }
   func moveSelected(to role: String) {
-    guard let m = selectedMessage, let a = selectedAccount else { return }
+    guard let m = selectedMessage else { return }
     Task {
       do {
-        let token = try await credential(a)
-        try await call { try $0.moveMessage(messageId: m.id, credential: token, role: role) }
+        try await application.moveMessage(messageId: m.id, role: role)
         selectedID = nil
         body = nil
         await reload()
@@ -432,36 +342,11 @@ import NaturalLanguage
       showSettings = true
       return
     }
-    let timestamp = Int64(Date().timeIntervalSince1970)
-    var draft = Draft(
-      id: UUID().uuidString, accountId: account.id, to: "", cc: "", bcc: "", subject: "", body: "",
-      attachmentPaths: [], replyToMessageId: "", references: "", status: "draft", lastError: "",
-      createdAt: timestamp, updatedAt: timestamp, sendAfter: 0)
-    if let mode = reply, let message = selectedMessage {
-      if mode != "forward" {
-        draft.to = message.replyToAddress.isEmpty ? message.fromAddress : message.replyToAddress
-        if mode == "all" {
-          let others = (message.toAddresses + "," + message.ccAddresses).split(separator: ",").map {
-            $0.trimmingCharacters(in: .whitespaces)
-          }.filter {
-            !$0.isEmpty && $0.caseInsensitiveCompare(account.address) != .orderedSame
-              && $0.caseInsensitiveCompare(message.fromAddress) != .orderedSame
-          }
-          draft.cc = Array(Set(others)).sorted().joined(separator: ", ")
-        }
-        draft.subject =
-          message.subject.lowercased().hasPrefix("re:") ? message.subject : "Re: " + message.subject
-        draft.replyToMessageId = message.messageId
-        draft.references = message.messageId
-      } else {
-        draft.subject = "Fwd: " + message.subject
-      }
-      let quote = (body?.text ?? "").components(separatedBy: "\n").map { "> " + $0 }.joined(
-        separator: "\n")
-      draft.body = "\n\n\(message.date.formatted())，\(message.sender) 写道：\n\(quote)"
-    }
-    compose = draft
+    let mode: ComposeMode = reply == "forward" ? .forward : reply == "all" ? .replyAll : reply == nil ? .new : .reply
+    compose = composeDraft(account: account, message: selectedMessage, body: body, mode: mode,
+      dateLabel: selectedMessage?.date.formatted() ?? "")
   }
+
   func saveDraft(_ draft: Draft) async {
     do {
       _ = try await call { try $0.saveDraft(draft: draft) }
@@ -469,64 +354,23 @@ import NaturalLanguage
     } catch { errorMessage = userError(error) }
   }
   func queue(_ draft: Draft) async -> Bool {
-    guard let account = accounts.first(where: { $0.id == draft.accountId }),
-      account.provider != "demo", account.provider != "local"
-    else {
-      errorMessage = "示例或本地导入账号不能发送邮件，请添加真实邮箱"
-      return false
-    }
-    guard
-      !draft.to.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draft.cc.isEmpty
-        || !draft.bcc.isEmpty
-    else {
-      errorMessage = "请填写收件人"
-      return false
-    }
-    var queued = draft
-    queued.status = "queued"
-    queued.sendAfter = Int64(Date().timeIntervalSince1970) + 5
     do {
-      _ = try await call { try $0.saveDraft(draft: queued) }
+      _ = try await application.queue(draft: draft)
       drafts = try await call { try $0.drafts() }
-    } catch {
-      errorMessage = userError(error)
-      return false
-    }
-    compose = nil
-    notify("邮件将在 5 秒后发送，可在待发送中撤销")
-    Task {
-      try? await Task.sleep(for: .seconds(5))
-      await submitDraft(queued.id)
-    }
-    return true
+      compose = nil
+      notify("邮件将在 5 秒后发送，可在待发送中撤销")
+      return true
+    } catch { errorMessage = userError(error); return false }
   }
   func submitDraft(_ id: String) async {
-    do {
-      let rows = try await call { try $0.drafts() }
-      guard let d = rows.first(where: { $0.id == id && ["queued", "failed"].contains($0.status) }),
-        let account = accounts.first(where: { $0.id == d.accountId })
-      else { return }
-      let token = try await credential(account)
-      if let i = drafts.firstIndex(where: { $0.id == id }) { drafts[i].status = "sending" }
-      let result = try await call { try $0.sendDraft(id: id, credential: token) }
-      drafts = try await call { try $0.drafts() }
-      if result.status == "accepted" {
-        notify(result.lastError.isEmpty ? "已提交到发件服务器" : result.lastError)
-        await sync(account)
-      } else {
-        errorMessage = result.lastError
-      }
-    } catch {
-      errorMessage = userError(error)
-      let reason = userError(error)
-      try? await call { try $0.failUnsubmitted(id: id, message: reason) }
-      if let rows = try? await call({ try $0.drafts() }) { drafts = rows }
-    }
+    do { _ = try await application.submit(id: id) }
+    catch { errorMessage = userError(error) }
+    drafts = (try? await call { try $0.drafts() }) ?? drafts
   }
   func cancelQueued(_ draft: Draft) {
     Task {
       do {
-        try await call { try $0.cancelQueued(id: draft.id) }
+        try application.cancelQueued(id: draft.id)
         drafts = try await call { try $0.drafts() }
         notify("已撤销发送，邮件保留在草稿")
       } catch { errorMessage = userError(error) }
@@ -563,23 +407,18 @@ import NaturalLanguage
     let selected = message.id
     translationTask = Task {
       do {
-        let key = try await SecretStore.read("translation:\(config.id)") ?? ""
-        let result = try await TranslationService.translate(
-          subject: message.subject, markdown: body.markdown, hash: body.contentHash,
-          configuration: config, key: key
-        ) { [weak self] done, total, blocks in
-          await self?.setTranslationProgress(
-            selected: selected, generation: generation, done: done, total: total, blocks: blocks)
+        let observer = CoreTranslationObserver { [weak self] done, total, blocks in
+          await self?.setTranslationProgress(selected: selected, generation: generation,
+            done: done, total: total, blocks: blocks)
         }
+        let result = try await application.translate(messageId: message.id, body: body,
+          configuration: config, force: force, observer: observer)
         try Task.checkCancellation()
         guard selectedID == selected, translationGeneration == generation else { return }
         translation = result
         translating = false
         translationProgress = "全文已翻译"
-        let cache = TranslationService.cacheKey(
-          accountID: message.accountId, body: body, configuration: config, subject: message.subject)
-        let json = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
-        try await call { try $0.setSetting(key: cache, value: json) }
+
       } catch {
         if selectedID == selected, translationGeneration == generation {
           translating = false
@@ -624,7 +463,7 @@ import NaturalLanguage
         }
         if item.clientIdentifier == "subject" {
           title = item.targetText
-        } else if let id = Int(item.clientIdentifier ?? "") {
+        } else if let id = UInt32(item.clientIdentifier ?? "") {
           translated.append(.init(id: id, text: item.targetText))
           partialTranslation = translated.sorted { $0.id < $1.id }
         }
@@ -634,13 +473,11 @@ import NaturalLanguage
       let result = TranslationResult(
         subject: title, blocks: translated.sorted { $0.id < $1.id }, sourceHash: body.contentHash,
         model: "macOS 系统翻译")
+      try application.saveSystemTranslation(messageId: message.id, body: body,
+        configuration: config, result: result)
       translation = result
       translating = false
       translationProgress = "全文已翻译"
-      let cache = TranslationService.cacheKey(
-        accountID: message.accountId, body: body, configuration: config, subject: message.subject)
-      let json = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
-      try await call { try $0.setSetting(key: cache, value: json) }
     } catch {
       if selectedID == selected, translationGeneration == generation {
         translating = false
@@ -652,7 +489,8 @@ import NaturalLanguage
   func setTranslationProgress(
     selected: String, generation: UUID, done: Int, total: Int, blocks: [TranslationBlock]
   ) {
-    guard selectedID == selected, translationGeneration == generation else { return }
+    guard translating, selectedID == selected, translationGeneration == generation,
+      blocks.count >= partialTranslation.count else { return }
     translationProgress = "已翻译 \(done) / \(total) 段"
     partialTranslation = blocks
   }
@@ -670,58 +508,35 @@ import NaturalLanguage
       notify("译文尚未完成，暂不能复制完整译文")
       return
     }
-    var output =
-      "# \(mode == .original ? message.subject : translation?.subject ?? message.subject)\n\n- 发件人：\(message.sender) <\(message.fromAddress)>\n- 收件人：\(message.toAddresses)\n- 日期：\(message.date.formatted(.iso8601))\n\n---\n\n"
-    switch mode {
-    case .original: output += body.markdown
-    case .translated: output += translation!.markdown
-    case .bilingual:
-      let originals = TranslationService.blocks(body.markdown)
-      for block in originals {
-        output +=
-          block.text + "\n\n" + (translation!.blocks.first { $0.id == block.id }?.text ?? "（此段未翻译）")
-          + "\n\n---\n\n"
-      }
-    }
-    if !body.attachments.isEmpty {
-      output +=
-        "\n\n## 附件\n"
-        + body.attachments.map { "- \($0.filename)（\(humanSize($0.size))）" }.joined(separator: "\n")
-    }
+    let output: String
+    do {
+      let exportMode: ExportMode = mode == .original ? .original : mode == .translated ? .translated : .bilingual
+      output = try exportMarkdown(message: message, body: body, translation: translation,
+        mode: exportMode, dateLabel: message.date.formatted(.iso8601))
+    } catch { errorMessage = userError(error); return }
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(output, forType: .string)
     notify("已复制\(mode == .bilingual ? "双语" : mode.rawValue) Markdown")
   }
   func download(_ attachment: AttachmentInfo) {
-    guard let message = selectedMessage, let account = selectedAccount else { return }
+    guard let message = selectedMessage else { return }
     let panel = NSSavePanel()
     panel.nameFieldStringValue = attachment.filename
     guard panel.runModal() == .OK, let url = panel.url else { return }
     Task {
       do {
-        let token = try await credential(account)
-        try await call {
-          try $0.downloadAttachment(
-            messageId: message.id, partId: attachment.partId, credential: token,
-            destination: url.path)
-        }
+        try await application.download(messageId: message.id, partId: attachment.partId, destination: url.path)
         notify("附件已保存")
       } catch { errorMessage = userError(error) }
     }
   }
   func persistTranslationSettings() async throws {
-    let json = String(decoding: try JSONEncoder().encode(translationConfigs), as: UTF8.self)
-    let id = selectedTranslationID
-    try await call {
-      try $0.setSetting(key: "translation-configs", value: json)
-      try $0.setSetting(key: "translation-default", value: id)
-    }
+    try application.saveTranslationConfigurations(configurations: translationConfigs, selectedId: selectedTranslationID)
     cancelTranslation()
     translation = nil
   }
   func saveAccount(_ account: Account, password: String) async throws {
-    if !password.isEmpty { try await SecretStore.save(password, for: "account:\(account.id)") }
-    try await call { try $0.saveAccount(account: account) }
+    try await application.saveAccount(account: account, password: password)
     await reload()
     beginMonitoring()
   }
@@ -735,13 +550,7 @@ import NaturalLanguage
     NSApp.activate(ignoringOtherApps: true)
   }
   func removeAccount(_ account: Account) async throws {
-    monitorTasks[account.id]?.cancel()
-    monitorTasks[account.id] = nil
-    preloadTasks[account.id]?.cancel()
-    preloadTasks[account.id] = nil
-    preloadRequested.remove(account.id)
-    try await call { try $0.removeAccount(accountId: account.id) }
-    try await SecretStore.remove("account:\(account.id)")
+    try await application.removeAccount(accountId: account.id)
     syncErrors[account.id] = nil
     selectedID = nil
     body = nil
@@ -753,9 +562,9 @@ import NaturalLanguage
     if !clientSecret.isEmpty { try await SecretStore.save(clientSecret, for: "google-client-secret") }
   }
   func toggleDemo() async {
-    periodicTask?.cancel()
-    monitorTasks.values.forEach { $0.cancel() }
-    monitorTasks = [:]
+    application.stop()
+    bodyTask?.cancel()
+    coreReloadTask?.cancel()
     cancelTranslation()
     engineGeneration = UUID()
     selectionGeneration = UUID()
@@ -767,6 +576,7 @@ import NaturalLanguage
       demoMode.toggle()
       engine = try MailEngine(
         directory: root.appendingPathComponent(demoMode ? "Preview" : "Mail").path)
+      connectApplication()
       accounts = []
       folders = []
       messages = []

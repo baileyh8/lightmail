@@ -69,30 +69,20 @@ enum ReadingMode: String, CaseIterable {
   case translated = "译文"
   case bilingual = "双语"
 }
-struct TranslationConfiguration: Codable, Identifiable, Equatable {
-  var id = UUID().uuidString
-  var name = "我的翻译服务"
-  var baseURL = "https://api.openai.com/v1"
-  var model = ""
-  var targetLanguage = "简体中文"
-  var stream = true
-  var outputFormat = "prompt"
-  var inputCharacters = 12000
-  var glossary = ""
-  var engine = "llm"
+extension TranslationConfiguration: Identifiable {
+  init() {
+    self.init(id: UUID().uuidString, name: "我的翻译服务", baseUrl: "https://api.openai.com/v1",
+      model: "", targetLanguage: "简体中文", stream: true, outputFormat: "prompt",
+      inputCharacters: 12000, glossary: "", engine: "llm")
+  }
+  var baseURL: String { get { baseUrl } set { baseUrl = newValue } }
 }
-struct TranslationBlock: Codable, Equatable {
-  var id: Int
-  var text: String
-}
-struct TranslationResult: Codable, Equatable {
-  var subject: String
-  var blocks: [TranslationBlock]
-  var sourceHash: String
-  var model: String
-  var inputTokens: Int?
-  var outputTokens: Int?
-  var markdown: String { blocks.map(\.text).joined(separator: "\n\n") }
+extension TranslationResult {
+  init(subject: String, blocks: [TranslationBlock], sourceHash: String, model: String) {
+    self.init(subject: subject, blocks: blocks, sourceHash: sourceHash, model: model,
+      inputTokens: nil, outputTokens: nil)
+  }
+  var markdown: String { translationMarkdown(result: self) }
 }
 struct OAuthSettings: Codable { var clientID = "" }
 

@@ -73,7 +73,8 @@ struct MacKeychainBackend: SecretBackend {
   }
 }
 
-actor SessionSecrets {
+final class SessionSecrets: @unchecked Sendable {
+  private let lock = NSRecursiveLock()
   private enum Cached { case value(String), missing }
   private var values: [String: Cached] = [:]
   private var blocked: Set<String> = []
@@ -82,8 +83,9 @@ actor SessionSecrets {
   init(backend: SecretBackend, changed: @escaping () -> Void = {}) {
     self.backend = backend; self.changed = changed
   }
-  func pendingKeys() -> [String] { blocked.sorted() }
+  func pendingKeys() -> [String] { lock.lock(); defer { lock.unlock() }; return blocked.sorted() }
   func read(_ key: String, interactive: Bool = false) throws -> String? {
+    lock.lock(); defer { lock.unlock() }
     if !interactive {
       if blocked.contains(key) { throw KeychainStatusError(status: errSecInteractionNotAllowed) }
       if let cached = values[key] {
@@ -98,6 +100,7 @@ actor SessionSecrets {
     } catch { record(error, key: key); throw error }
   }
   func save(_ value: String, for key: String) throws {
+    lock.lock(); defer { lock.unlock() }
     do {
       try backend.save(value, for: key)
       values[key] = .value(value)
@@ -105,6 +108,7 @@ actor SessionSecrets {
     } catch { record(error, key: key); throw error }
   }
   func remove(_ key: String) throws {
+    lock.lock(); defer { lock.unlock() }
     do {
       try backend.remove(key)
       values[key] = nil
@@ -124,10 +128,13 @@ enum SecretStore {
   private static let vault = SessionSecrets(backend: MacKeychainBackend()) {
     NotificationCenter.default.post(name: authorizationChanged, object: nil)
   }
-  static func pendingKeys() async -> [String] { await vault.pendingKeys() }
-  static func read(_ key: String) async throws -> String? { try await vault.read(key) }
+  static func readSync(_ key: String) throws -> String? { try vault.read(key) }
+  static func saveSync(_ value: String, for key: String) throws { try vault.save(value, for: key) }
+  static func removeSync(_ key: String) throws { try vault.remove(key) }
+  static func pendingKeys() async -> [String] { vault.pendingKeys() }
+  static func read(_ key: String) async throws -> String? { try await Task.detached { try readSync(key) }.value }
   // Called only from the user's explicit authorization button.
-  static func authorize(_ key: String) async throws { _ = try await vault.read(key, interactive: true) }
-  static func save(_ value: String, for key: String) async throws { try await vault.save(value, for: key) }
-  static func remove(_ key: String) async throws { try await vault.remove(key) }
+  static func authorize(_ key: String) async throws { _ = try await Task.detached { try vault.read(key, interactive: true) }.value }
+  static func save(_ value: String, for key: String) async throws { try await Task.detached { try saveSync(value, for: key) }.value }
+  static func remove(_ key: String) async throws { try await Task.detached { try removeSync(key) }.value }
 }

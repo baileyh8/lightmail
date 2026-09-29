@@ -85,7 +85,7 @@ Gmail OAuth 需配置你自己的 Desktop Client ID；仓库与安装包不附�
 ## 轻量，是具体的设计
 
 - **原生界面**：SwiftUI + AppKit；HTML 阅读使用系统 WKWebView，不捆绑浏览器运行时。
-- **本地内核**：Rust / Tokio 处理邮件连接与解析，SQLite 保存摘要、草稿与缓存。
+- **共享业务核心**：Rust / Tokio 统一处理同步调度、预加载、OAuth、发送队列、LLM 翻译与 Markdown 导出；SQLite 保存摘要、草稿与缓存。
 - **每账号 20 封**：优先预加载最新邮件；旧信摘要保留，正文按需临时读取。
 - **凭证分开保存**：密码、OAuth token 和 API Key 使用 macOS Keychain。
 - **有界处理**：限制正文大小与 HTML 复杂度，包含 500 次嵌套邮件阅读回归检查。
@@ -112,6 +112,15 @@ python3 scripts/check.py
 检查包含 Rust 单元测试、Swift 状态与凭证检查、实际 WebKit 渲染、IMAP/SMTP 的直连和代理路径、Chat 协议以及受监护的内存回归。测试使用本地回环服务和虚构邮件，不需要真实邮箱或 API Key。
 
 可选：`python3 scripts/check.py --benchmark` 运行大数据集查询基准。拥有签名证书的开发者可通过 `LIGHTMAIL_SIGNING_IDENTITY` 指定构建身份。
+
+只开发共享核心或接入 Windows／GPUI，无需 Swift 工具链：
+
+```sh
+cargo test --locked --lib
+cargo run --locked --example headless -- build/headless-demo
+```
+
+原生前端通过 `MailApplication` 调用同一套业务命令，实现 `PlatformServices` 对接系统凭证与代理，再订阅 `ApplicationObserver` 更新界面。示例只使用虚构邮件；Windows 图形界面尚未随仓库提供。详见[客户端接入约定](docs/architecture.md#原生客户端接入约定)。
 
 ## 快捷键
 

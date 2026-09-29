@@ -51,6 +51,9 @@ def main():
         chat = subprocess.Popen([sys.executable, "tests/chat_fixture.py", "--port-file", str(chat_port)], cwd=ROOT)
         try:
             wait_file(chat_port, chat)
+            run(["bash", "scripts/cargo.sh", "test", "--lib", "shared_translation_integration",
+                 "--", "--ignored", "--nocapture"],
+                env=dict(os.environ, LIGHTMAIL_CHAT_ENDPOINT=f"http://127.0.0.1:{chat_port.read_text()}/v1"))
             for kind in ("direct", "socks5", "http"):
                 ports = temp / f"mail-{kind}.json"
                 mail = subprocess.Popen([sys.executable, "tests/mail_fixture.py", "--cert", str(cert),

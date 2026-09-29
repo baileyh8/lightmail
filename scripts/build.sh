@@ -4,6 +4,13 @@ cd "$(dirname "$0")/.."
 mkdir -p build Generated/FFI Sources/Lightmail/Generated dist
 bash scripts/cargo.sh build --release --lib
 bash scripts/cargo.sh run --features bindings --bin uniffi-bindgen -- generate --library target/release/liblightmail_core.dylib --language swift --out-dir build/bindings
+# Normalize generator whitespace deterministically; never hand-edit bindings.
+python3 - <<'PYTHON'
+from pathlib import Path
+for path in Path("build/bindings").iterdir():
+    if path.suffix in {".swift", ".h", ".modulemap"}:
+        path.write_text("\n".join(line.rstrip() for line in path.read_text().splitlines()) + "\n")
+PYTHON
 cp build/bindings/lightmail_core.swift Sources/Lightmail/Generated/
 cp build/bindings/lightmail_coreFFI.h Generated/FFI/
 cp build/bindings/lightmail_coreFFI.modulemap Generated/FFI/module.modulemap

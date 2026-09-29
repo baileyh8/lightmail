@@ -134,38 +134,26 @@ enum SelfTests {
     }
     check("Protected links and code restore") {
       let p = ProtectedText(
-        "Email a@example.com and visit https://example.com. Use `x=3`.", prefix: "T")
-      return try p.restore(p.protected) == p.source
+        text: "Email a@example.com and visit https://example.com. Use `x=3`.", prefix: "T")
+      return try p.restore(text: p.protectedText()) == "Email a@example.com and visit https://example.com. Use `x=3`."
     }
     check("Missing protected tokens rejected") {
-      let p = ProtectedText("https://example.com", prefix: "T")
+      let p = ProtectedText(text: "https://example.com", prefix: "T")
       do {
-        _ = try p.restore("missing")
+        _ = try p.restore(text: "missing")
         return false
       } catch { return true }
     }
     check("Numeric drift rejected") {
-      let p = ProtectedText("Due 2026-10-01. USD 12.50.", prefix: "T")
+      let p = ProtectedText(text: "Due 2026-10-01. USD 12.50.", prefix: "T")
       do {
-        _ = try p.restore("Due 2026-10-02. USD 12.50.")
+        _ = try p.restore(text: "Due 2026-10-02. USD 12.50.")
         return false
       } catch { return true }
     }
     check("Long paragraph fully covered") {
       let s = String(repeating: "abc ", count: 5000)
       return TranslationService.blocks(s).map(\.text).joined() == s
-    }
-    check("Fenced JSON response parsed") {
-      let (_, b) = try TranslationService.decode(
-        "```json\n{\"subject\":\"测试\",\"blocks\":[{\"id\":0,\"text\":\"内容\"}]}\n```")
-      return b.count == 1 && b[0].text == "内容"
-    }
-    check("Empty translated block rejected") {
-      do {
-        _ = try TranslationService.decode(
-          "{\"subject\":\"测试\",\"blocks\":[{\"id\":0,\"text\":\"\"}]}")
-        return false
-      } catch { return true }
     }
     check("Rust bridge and isolated demo database") {
       let directory = FileManager.default.temporaryDirectory.appendingPathComponent(

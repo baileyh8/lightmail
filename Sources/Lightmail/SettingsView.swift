@@ -501,12 +501,7 @@ struct TranslationEditor: View {
   }
   func save() async {
     do {
-      if configuration.engine == "llm" {
-        _ = try TranslationService.endpoint(configuration.baseURL)
-        guard !configuration.model.trimmingCharacters(in: .whitespaces).isEmpty else {
-          throw MailAppError.message("请填写 Model")
-        }
-      }
+      try validateTranslationConfiguration(configuration: configuration)
       if !apiKey.isEmpty { try await SecretStore.save(apiKey, for: "translation:\(configuration.id)") }
       if let index = store.translationConfigs.firstIndex(where: { $0.id == configuration.id }) {
         store.translationConfigs[index] = configuration

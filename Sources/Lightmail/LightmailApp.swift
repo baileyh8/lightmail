@@ -46,6 +46,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         .onReceive(
           NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
         ) { _ in store.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in store.setActive(true) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in store.setActive(false) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.application.stop() }
     }
     .windowStyle(.hiddenTitleBar)
     .defaultSize(width: 1440, height: 920)
