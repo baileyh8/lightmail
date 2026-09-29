@@ -3,6 +3,40 @@ import Security
 
 // Uses only synthetic values and an injected backend: never the user's keychain.
 enum CredentialTests {
+  @MainActor static func runAuthorizationPresentation() -> Int {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("lightmail-credential-presentation-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let backend = Backend()
+    backend.protected = true
+    let vault = SessionSecrets(backend: backend) {
+      NotificationCenter.default.post(name: SecretStore.authorizationChanged, object: nil)
+    }
+    var store: MailStore? = MailStore(directory: directory, startAutomatically: false,
+                                    credentialRequestSource: { vault.pendingKeys() })
+    func waitFor(_ name: String, _ condition: () -> Bool) {
+      let deadline = Date().addingTimeInterval(3)
+      while !condition() && Date() < deadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+      }
+      guard condition() else { print("FAIL credentials: \(name)"); exit(1) }
+      print("PASS credentials: \(name)")
+    }
+    // Deliberately no RootView or SettingsView: reproduce a startup worker failure.
+    DispatchQueue.global().async { _ = try? vault.read("account:fixture") }
+    waitFor("startup credential failure exposes authorization without a mounted view") {
+      store?.credentialRequests == ["account:fixture"] && backend.interactiveReads == 0
+    }
+    DispatchQueue.global().async { _ = try? vault.read("account:fixture", interactive: true) }
+    waitFor("successful explicit authorization clears the presentation state") {
+      store?.credentialRequests.isEmpty == true
+    }
+    weak var releasedStore = store
+    store = nil
+    waitFor("credential observer does not retain the mail store") { releasedStore == nil }
+    return 3
+  }
+
   final class Backend: SecretBackend {
     var value: String? = "fixture-secret"
     var reads = 0

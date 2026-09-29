@@ -52,9 +52,13 @@ import NaturalLanguage
   private var queryGeneration = UUID()
   private var engineGeneration = UUID()
   private var translationGeneration = UUID()
+  private var credentialObserver: NSObjectProtocol?
+  private let credentialRequestSource: @Sendable () async -> [String]
   private let root: URL
 
-  init(directory: URL? = nil, startAutomatically: Bool = true) {
+  init(directory: URL? = nil, startAutomatically: Bool = true,
+       credentialRequestSource: @escaping @Sendable () async -> [String] = { await SecretStore.pendingKeys() }) {
+    self.credentialRequestSource = credentialRequestSource
     let initialDemo = CommandLine.arguments.contains("--demo")
     demoMode = initialDemo
     let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -74,10 +78,20 @@ import NaturalLanguage
       engine = try MailEngine(
         directory: root.appendingPathComponent(initialDemo ? "Preview" : "Mail").path)
     } catch { fatalError("无法打开轻邮本地数据库：\(error.localizedDescription)") }
+    // Workers can encounter a locked credential before the first view subscribes.
+    // Keep this OS authorization state with the store for its entire lifetime.
+    credentialObserver = NotificationCenter.default.addObserver(
+      forName: SecretStore.authorizationChanged, object: nil, queue: nil
+    ) { [weak self] _ in
+      Task { @MainActor [weak self] in await self?.refreshCredentialRequests() }
+    }
     connectApplication()
     if startAutomatically { Task { await start() } }
   }
-  deinit { application?.stop() }
+  deinit {
+    if let credentialObserver { NotificationCenter.default.removeObserver(credentialObserver) }
+    application?.stop()
+  }
   private func connectApplication() {
     let observer = CoreApplicationObserver(generation: engineGeneration)
     observer.store = self
@@ -256,7 +270,7 @@ import NaturalLanguage
     } catch { if selectionGeneration == request { bodyError = userError(error) } }
   }
   func refreshCredentialRequests() async {
-    credentialRequests = await SecretStore.pendingKeys()
+    credentialRequests = await credentialRequestSource()
   }
   func authorizeCredentials() async {
     guard !authorizingCredentials else { return }

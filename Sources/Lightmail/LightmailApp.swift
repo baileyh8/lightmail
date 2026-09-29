@@ -134,9 +134,6 @@ struct RootView: View {
         CredentialAuthorizationBanner().environmentObject(store)
       }
     }
-    .onReceive(NotificationCenter.default.publisher(for: SecretStore.authorizationChanged).receive(on: DispatchQueue.main)) { _ in
-      Task { await store.refreshCredentialRequests() }
-    }
     .frame(minWidth: 860, minHeight: 600)
     .sheet(isPresented: $store.showSettings) { SettingsView().environmentObject(store) }
     .sheet(item: $store.compose) { draft in ComposeView(draft: draft).environmentObject(store) }

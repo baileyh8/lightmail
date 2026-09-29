@@ -51,9 +51,9 @@ enum SelfTests {
       exit(1)
     }
   }
-  static func run() {
+  @MainActor static func run() {
     var failures: [String] = []
-    var passed = CredentialTests.run()
+    var passed = CredentialTests.run() + CredentialTests.runAuthorizationPresentation()
     func check(_ name: String, _ body: () throws -> Bool) {
       do {
         if try body() {

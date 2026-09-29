@@ -102,6 +102,7 @@ jobs:
             build/windows-acceptance/*.png
             build/windows-acceptance/result.json
             build/windows-acceptance/reader-visual.json
+            build/windows-acceptance/collector-metrics.json
             build/windows-acceptance/native/*.json
             build/windows-acceptance/native/panic.txt
           retention-days: 7
