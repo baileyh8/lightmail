@@ -26,6 +26,8 @@ jobs:
         run: cargo test --locked --lib
       - name: Headless consumer
         run: cargo run --locked --example headless -- build/headless-demo
+      - name: TLS mail and LLM loopback acceptance
+        run: python scripts/check.py --protocols-only
   build-and-test:
     runs-on: macos-15
     timeout-minutes: 30

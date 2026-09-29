@@ -27,9 +27,11 @@ pub enum Page {
 }
 pub struct MailDesktop {
     pub focus: FocusHandle,
+    pub data_root: PathBuf,
     pub focus_reading: bool,
     pub plain_reading: bool,
     pub adding_account: bool,
+    pub extra_recipients: bool,
     pub probes: HashMap<String, Bounds<Pixels>>,
     pub engine: Arc<MailEngine>,
     pub service: Arc<MailApplication>,
@@ -99,6 +101,7 @@ impl Drop for MailDesktop {
 impl MailDesktop {
     pub fn new(
         engine: Arc<MailEngine>,
+        data_root: PathBuf,
         demo: bool,
         acceptance: Option<PathBuf>,
         window: &mut Window,
@@ -175,9 +178,11 @@ impl MailDesktop {
         });
         let mut app = Self {
             focus,
+            data_root,
             focus_reading: false,
             plain_reading: false,
             adding_account: false,
+            extra_recipients: false,
             probes: HashMap::new(),
             engine,
             service,
@@ -247,6 +252,28 @@ impl MailDesktop {
         }
         app.record("startup");
         app
+    }
+    pub fn switch_demo(&mut self, demo: bool, cx: &mut Context<Self>) {
+        self.persist_compose(cx);
+        let result = (|| -> std::io::Result<()> {
+            let mut command = std::process::Command::new(std::env::current_exe()?);
+            command.arg("--data-dir").arg(&self.data_root);
+            if demo {
+                command.arg("--demo");
+            }
+            command.spawn()?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.service.stop();
+                cx.quit();
+            }
+            Err(_) => {
+                self.status = "无法打开示例窗口，请重试".into();
+                cx.notify();
+            }
+        }
     }
     pub fn value(&self, key: &'static str, cx: &App) -> String {
         self.fields[key].read(cx).value().to_string()
@@ -875,6 +902,7 @@ impl MailDesktop {
             self.set(key, value, window, cx);
         }
         self.attachments = draft.attachment_paths.clone();
+        self.extra_recipients = !draft.cc.is_empty() || !draft.bcc.is_empty();
         self.draft = Some(draft);
         self.page = Page::Compose;
         self.record("compose");

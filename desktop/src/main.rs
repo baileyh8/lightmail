@@ -89,8 +89,9 @@ fn main() {
                     window.set_window_title("轻邮 Lightmail");
                     #[cfg(feature = "acceptance")]
                     let acceptance_path = acceptance.clone();
-                    let view =
-                        cx.new(|cx| app::MailDesktop::new(engine, demo, acceptance, window, cx));
+                    let view = cx.new(|cx| {
+                        app::MailDesktop::new(engine, root, demo, acceptance, window, cx)
+                    });
                     #[cfg(feature = "acceptance")]
                     if run_acceptance && demo {
                         if let Some(path) = acceptance_path {

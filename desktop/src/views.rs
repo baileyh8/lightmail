@@ -37,10 +37,15 @@ fn short_date(ts: i64) -> String {
         .unwrap_or_default()
 }
 fn column() -> Div {
-    div().flex().flex_col().min_w_0().min_h_0()
+    div().flex().flex_col().flex_shrink_0().min_w_0().min_h_0()
 }
 fn row() -> Div {
-    div().flex().items_center().min_w_0().gap_2()
+    div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .min_w_0()
+        .gap_2()
 }
 fn muted(text: impl Into<SharedString>) -> Div {
     div().text_sm().text_color(rgb(MUTED)).child(text.into())
@@ -304,6 +309,14 @@ impl MailDesktop {
                 cx,
             ))
             .child(list)
+            .when(self.demo, |v| {
+                v.child(
+                    Button::new("leave-demo")
+                        .label("返回真实邮箱")
+                        .ghost()
+                        .on_click(cx.listener(|s, _, _, cx| s.switch_demo(false, cx))),
+                )
+            })
             .child(probe(
                 "settings",
                 Button::new("settings")
@@ -1410,18 +1423,180 @@ impl MailDesktop {
                         cx.notify();
                     })),
             )
+            .child(
+                Button::new("try-demo")
+                    .label("先体验示例")
+                    .ghost()
+                    .on_click(cx.listener(|s, _, _, cx| s.switch_demo(true, cx))),
+            )
     }
     fn compose_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        column().flex_1().h_full().child(row().h(px(70.)).px(px(36.)).border_b_1().border_color(rgb(LINE)).child(title("写邮件")).child(div().flex_1()).child(probe("save-draft",Button::new("save-draft").label("保存草稿").on_click(cx.listener(|s,_,_,cx|s.save_draft(false,cx))),cx)).child(Button::new("send").label("发送").primary().disabled(self.busy).on_click(cx.listener(|s,_,_,cx|s.save_draft(true,cx)))))
-            .child(column().id("compose-form").flex_1().overflow_y_scroll().p_7().gap_4()
-                .child(muted(format!("发件人：{}",self.draft.as_ref().and_then(|d|self.accounts.iter().find(|a|a.id==d.account_id)).map(|a|a.address.as_str()).unwrap_or_default())))
-                .child(row().flex_wrap().children(self.accounts.iter().map(|a|{let id=a.id.clone();Button::new(SharedString::from(format!("from-{id}"))).label(a.name.clone()).ghost().selected(self.draft.as_ref().is_some_and(|d|d.account_id==id)).on_click(cx.listener(move|s,_,_,cx|{if let Some(d)=&mut s.draft{d.account_id=id.clone();}s.persist_compose(cx);cx.notify();}))})))
-                .child(self.field("to","收件人")).child(row().child(div().flex_1().child(self.field("cc","抄送"))).child(div().flex_1().child(self.field("bcc","密送"))))
-                .child(self.field("subject","主题")).child(Input::new(&self.fields["draft_body"]).h(px(360.)))
-                .child(row().child(Button::new("add-attachment").label("添加附件").on_click(cx.listener(|s,_,_,cx|{if let Some(files)=rfd::FileDialog::new().pick_files(){s.attachments.extend(files.into_iter().map(|p|p.to_string_lossy().into_owned()));cx.notify();}})))
-                    .child(Button::new("clear-attachments").label("清除附件").ghost().disabled(self.attachments.is_empty()).on_click(cx.listener(|s,_,_,cx|{s.attachments.clear();cx.notify();}))))
-                .children(self.attachments.iter().map(|path|muted(std::path::Path::new(path).file_name().unwrap_or_default().to_string_lossy().to_string())))
-                .child(muted("发送前保留 5 秒撤销窗口。发送结果不确定时，请先检查服务端已发送，避免重复投递。")))
+        let account = self
+            .draft
+            .as_ref()
+            .and_then(|d| self.accounts.iter().find(|a| a.id == d.account_id));
+        let sender = account
+            .map(|a| format!("{} <{}>", a.name, a.address))
+            .unwrap_or_default();
+        let accounts = self.accounts.clone();
+        let view = cx.entity().downgrade();
+        let sender_menu = Button::new("compose-sender")
+            .label(sender)
+            .ghost()
+            .dropdown_menu(move |mut menu, _, _| {
+                for account in &accounts {
+                    let id = account.id.clone();
+                    let view = view.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(format!("{} <{}>", account.name, account.address))
+                            .on_click(move |_, _, cx| {
+                                let _ = view.update(cx, |s, cx| {
+                                    if let Some(d) = &mut s.draft {
+                                        d.account_id = id.clone();
+                                    }
+                                    s.persist_compose(cx);
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                }
+                menu
+            });
+        let recipient = |key: &'static str, label: &'static str| {
+            row()
+                .h(px(44.))
+                .border_b_1()
+                .border_color(rgb(LINE))
+                .child(muted(label).w(px(60.)).flex_shrink_0())
+                .child(Input::new(&self.fields[key]).appearance(false).flex_1())
+        };
+        column()
+            .flex_1()
+            .h_full()
+            .child(
+                row()
+                    .h(px(70.))
+                    .px_6()
+                    .border_b_1()
+                    .border_color(rgb(LINE))
+                    .child(
+                        div()
+                            .text_size(px(21.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("写邮件"),
+                    )
+                    .child(div().flex_1())
+                    .child(muted("草稿保存在本机").text_size(px(11.)))
+                    .child(probe(
+                        "save-draft",
+                        Button::new("save-draft")
+                            .label("关闭")
+                            .outline()
+                            .on_click(cx.listener(|s, _, _, cx| s.save_draft(false, cx))),
+                        cx,
+                    )),
+            )
+            .child(
+                column()
+                    .px(px(26.))
+                    .child(
+                        row()
+                            .h(px(44.))
+                            .border_b_1()
+                            .border_color(rgb(LINE))
+                            .child(muted("发件人").w(px(60.)))
+                            .child(sender_menu),
+                    )
+                    .child(
+                        recipient("to", "收件人").child(
+                            Button::new("extra-recipients")
+                                .label(if self.extra_recipients {
+                                    "收起"
+                                } else {
+                                    "抄送 / 密送"
+                                })
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|s, _, _, cx| {
+                                    s.extra_recipients = !s.extra_recipients;
+                                    cx.notify();
+                                })),
+                        ),
+                    )
+                    .when(self.extra_recipients, |v| {
+                        v.child(recipient("cc", "抄送"))
+                            .child(recipient("bcc", "密送"))
+                    })
+                    .child(recipient("subject", "主题")),
+            )
+            .child(
+                div().flex_1().min_h_0().px_6().py_4().child(
+                    Input::new(&self.fields["draft_body"])
+                        .appearance(false)
+                        .text_size(px(15.))
+                        .h_full(),
+                ),
+            )
+            .when(!self.attachments.is_empty(), |v| {
+                v.child(
+                    row()
+                        .id("compose-attachments")
+                        .h(px(44.))
+                        .overflow_x_scroll()
+                        .px_6()
+                        .children(self.attachments.iter().map(|path| {
+                            let path = path.clone();
+                            Button::new(SharedString::from(path.clone()))
+                                .label(format!(
+                                    "{} ×",
+                                    std::path::Path::new(&path)
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                ))
+                                .small()
+                                .on_click(cx.listener(move |s, _, _, cx| {
+                                    s.attachments.retain(|p| p != &path);
+                                    s.persist_compose(cx);
+                                    cx.notify();
+                                }))
+                        })),
+                )
+            })
+            .child(
+                row()
+                    .h(px(74.))
+                    .px_6()
+                    .border_t_1()
+                    .border_color(rgb(LINE))
+                    .child(
+                        Button::new("send")
+                            .label("发送")
+                            .icon(icon("plane"))
+                            .primary()
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|s, _, _, cx| s.save_draft(true, cx))),
+                    )
+                    .child(
+                        Button::new("add-attachment")
+                            .label("添加附件")
+                            .ghost()
+                            .on_click(cx.listener(|s, _, _, cx| {
+                                if let Some(files) = rfd::FileDialog::new().pick_files() {
+                                    for path in files {
+                                        let path = path.to_string_lossy().into_owned();
+                                        if !s.attachments.contains(&path) {
+                                            s.attachments.push(path);
+                                        }
+                                    }
+                                    s.persist_compose(cx);
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child(div().flex_1())
+                    .child(muted("发送后有 5 秒撤销时间").text_size(px(11.))),
+            )
     }
 }
 impl Render for MailDesktop {
@@ -1438,9 +1613,8 @@ impl Render for MailDesktop {
             self.page,
             Page::Accounts | Page::Translation | Page::Storage
         );
-        let content = if self.page == Page::Compose {
-            self.compose_panel(cx).into_any_element()
-        } else if self.accounts.is_empty() {
+        let composing = self.page == Page::Compose;
+        let content = if self.accounts.is_empty() {
             self.welcome(cx).into_any_element()
         } else {
             row()
@@ -1490,7 +1664,7 @@ impl Render for MailDesktop {
                     .child(self.sidebar(cx))
                     .child(column().flex_1().h_full().child(content)),
             )
-            .when(settings, |root| {
+            .when(settings || composing, |root| {
                 root.child(
                     div()
                         .absolute()
@@ -1502,9 +1676,9 @@ impl Render for MailDesktop {
                         .justify_center()
                         .child(
                             div()
-                                .w(px(960.))
+                                .w(px(if composing { 780. } else { 960. }))
                                 .max_w_full()
-                                .h(px(700.))
+                                .h(px(if composing { 670. } else { 700. }))
                                 .max_h_full()
                                 .rounded(px(16.))
                                 .overflow_hidden()
@@ -1512,7 +1686,11 @@ impl Render for MailDesktop {
                                 .border_1()
                                 .border_color(rgb(LINE))
                                 .shadow_lg()
-                                .child(self.settings_panel(cx)),
+                                .child(if composing {
+                                    self.compose_panel(cx).into_any_element()
+                                } else {
+                                    self.settings_panel(cx).into_any_element()
+                                }),
                         ),
                 )
             })

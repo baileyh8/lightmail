@@ -12,6 +12,17 @@ async fn pause(cx: &AsyncApp) {
         .timer(Duration::from_millis(250))
         .await;
 }
+async fn screenshot(path: &std::path::Path, name: &str, cx: &AsyncApp) -> anyhow::Result<()> {
+    std::fs::create_dir_all(path)?;
+    std::fs::write(path.join("screenshot-request.txt"), name)?;
+    for _ in 0..24 {
+        pause(cx).await;
+        if path.join(format!("{name}.captured")).exists() {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("Screenshot collector did not capture {name}")
+}
 fn click(
     view: &Entity<MailDesktop>,
     handle: AnyWindowHandle,
@@ -121,6 +132,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             let document:serde_json::Value=serde_json::from_str(document.as_str().ok_or_else(||anyhow::anyhow!("Reader JSON"))?)?;
             anyhow::ensure!(document["text"].as_str().is_some_and(|s|s.contains("final review")),"Body text absent");
             anyhow::ensure!(document["csp"].as_str().is_some_and(|s|s.contains("img-src 'none'")),"Remote images not blocked");
+            screenshot(&path,"windows-inbox",cx).await?;
             click(&view,handle,"copy-markdown",false,cx)?;pause(cx).await;
             handle.update(cx,|_,_,cx|{anyhow::ensure!(cx.read_from_clipboard().and_then(|v|v.text()).is_some_and(|s|s.contains("final review")),"Markdown clipboard missing");Ok::<_,anyhow::Error>(())})??;
             handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{
@@ -135,6 +147,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             click(&view,handle,"settings",true,cx)?;pause(cx).await;
             click(&view,handle,"settings-demo-work",true,cx)?;pause(cx).await;
             handle.update(cx,|_,_,cx|{anyhow::ensure!(view.read(cx).editing.as_ref().is_some_and(|a|a.id=="demo-work"),"Account whitespace click failed");Ok::<_,anyhow::Error>(())})??;
+            screenshot(&path,"windows-settings",cx).await?;
             click(&view,handle,"translation-tab",false,cx)?;pause(cx).await;
             handle.update(cx,|_,_,cx|{anyhow::ensure!(view.read(cx).page==Page::Translation,"Translation page inaccessible");Ok::<_,anyhow::Error>(())})??;
             click(&view,handle,"storage-tab",false,cx)?;pause(cx).await;
@@ -143,6 +156,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             handle.update(cx,|_,window,cx|view.update(cx,|s,cx|{
                 s.set("to","acceptance@example.com",window,cx);s.set("subject","Synthetic acceptance draft",window,cx);s.set("draft_body","Only a local draft. No real sending.",window,cx);
             }))?;pause(cx).await;
+            screenshot(&path,"windows-compose",cx).await?;
             click(&view,handle,"save-draft",false,cx)?;pause(cx).await;
             handle.update(cx,|_,_,cx|{anyhow::ensure!(view.read(cx).engine.drafts()?.iter().any(|d|d.subject=="Synthetic acceptance draft"&&d.status=="draft"),"Draft did not persist");Ok::<_,anyhow::Error>(())})??;
             // Same body is rendered repeatedly to exercise renderer reuse, not just conversion.
