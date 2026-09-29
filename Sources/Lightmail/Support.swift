@@ -96,6 +96,37 @@ struct TranslationResult: Codable, Equatable {
 }
 struct OAuthSettings: Codable { var clientID = "" }
 
+// Plain buttons otherwise hit-test only their visible text/image on macOS.
+// Keep the existing appearance while including the label's padding and gaps.
+struct AreaButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .frame(minWidth: 28, minHeight: 28)
+      .contentShape(Rectangle())
+      .opacity(isEnabled ? (configuration.isPressed ? 0.65 : 1) : 0.4)
+  }
+}
+
+struct AreaDisclosureStyle: DisclosureGroupStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Button { configuration.isExpanded.toggle() } label: {
+        HStack(spacing: 6) {
+          Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
+            .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).frame(width: 12)
+          configuration.label
+          Spacer(minLength: 0)
+        }.frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+          .contentShape(Rectangle())
+      }.buttonStyle(AreaButtonStyle())
+        .accessibilityValue(configuration.isExpanded ? "已展开" : "已收起")
+      if configuration.isExpanded { configuration.content }
+    }
+  }
+}
+
 struct OutlineButtonStyle: ButtonStyle {
   var prominent = false
   func makeBody(configuration: Configuration) -> some View {
@@ -111,6 +142,7 @@ struct OutlineButtonStyle: ButtonStyle {
     .clipShape(RoundedRectangle(cornerRadius: 7))
     .overlay(
       RoundedRectangle(cornerRadius: 7).stroke(prominent ? Color.clear : Theme.line, lineWidth: 1))
+    .contentShape(Rectangle())
   }
 }
 struct IconButton: View {
@@ -119,8 +151,8 @@ struct IconButton: View {
   var action: () -> Void
   var body: some View {
     Button(action: action) {
-      Image(systemName: symbol).font(.system(size: 16)).frame(width: 28, height: 28).contentShape(
+      Image(systemName: symbol).font(.system(size: 16)).frame(width: 32, height: 32).contentShape(
         Rectangle())
-    }.buttonStyle(.plain).foregroundStyle(Theme.muted).help(help).accessibilityLabel(help)
+    }.buttonStyle(AreaButtonStyle()).foregroundStyle(Theme.muted).help(help).accessibilityLabel(help)
   }
 }

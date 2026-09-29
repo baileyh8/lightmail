@@ -198,27 +198,30 @@ struct SidebarView: View {
           store.showSettings = true
         } label: {
           Image(systemName: "plus").font(.system(size: 11))
-        }.buttonStyle(.plain).help("添加邮箱")
+        }.buttonStyle(AreaButtonStyle()).help("添加邮箱")
       }.padding(.horizontal, 21).padding(.top, 26).padding(.bottom, 9)
       ScrollView {
         VStack(spacing: 2) {
           ForEach(store.accounts) { account in
             VStack(spacing: 1) {
-              HStack(spacing: 9) {
-                Circle().fill(Color(hex: account.color)).frame(width: 8, height: 8)
+              HStack(spacing: 0) {
                 Button {
                   store.setScope(
                     MailScope(title: account.name, role: "inbox", accountID: account.id))
                 } label: {
-                  Text(account.name).font(.system(size: 13)).lineLimit(1).frame(
-                    maxWidth: .infinity, alignment: .leading)
-                }.buttonStyle(.plain)
-                if store.syncing.contains(account.id) {
-                  ProgressView().controlSize(.mini)
-                } else if count(account.id) > 0 {
-                  Text(String(count(account.id))).font(.system(size: 12)).foregroundStyle(
-                    Theme.muted)
-                }
+                  HStack(spacing: 9) {
+                    Circle().fill(Color(hex: account.color)).frame(width: 8, height: 8)
+                    Text(account.name).font(.system(size: 13)).lineLimit(1)
+                    Spacer(minLength: 0)
+                    if store.syncing.contains(account.id) {
+                      ProgressView().controlSize(.mini).allowsHitTesting(false)
+                    } else if count(account.id) > 0 {
+                      Text(String(count(account.id))).font(.system(size: 12)).foregroundStyle(Theme.muted)
+                    }
+                  }.padding(.leading, 12).padding(.trailing, 4).padding(.vertical, 11)
+                    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                    .contentShape(Rectangle())
+                }.buttonStyle(AreaButtonStyle())
                 Button {
                   if expanded.contains(account.id) {
                     expanded.remove(account.id)
@@ -228,9 +231,10 @@ struct SidebarView: View {
                 } label: {
                   Image(
                     systemName: expanded.contains(account.id) ? "chevron.down" : "chevron.right"
-                  ).font(.system(size: 9))
-                }.buttonStyle(.plain).foregroundStyle(Theme.muted)
-              }.padding(.horizontal, 12).padding(.vertical, 11).background(
+                  ).font(.system(size: 9)).frame(width: 32, height: 40).contentShape(Rectangle())
+                }.buttonStyle(AreaButtonStyle()).foregroundStyle(Theme.muted)
+                  .accessibilityLabel("\(expanded.contains(account.id) ? "收起" : "展开")\(account.name)文件夹")
+              }.background(
                 store.scope.accountID == account.id && store.scope.folderID.isEmpty
                   ? Theme.selected : Color.clear, in: RoundedRectangle(cornerRadius: 7))
               if expanded.contains(account.id) {
@@ -250,7 +254,7 @@ struct SidebarView: View {
                     ).background(
                       store.scope.folderID == folder.id ? Theme.selected : Color.clear,
                       in: RoundedRectangle(cornerRadius: 6))
-                  }.buttonStyle(.plain).foregroundStyle(Theme.muted)
+                  }.buttonStyle(AreaButtonStyle()).foregroundStyle(Theme.muted)
                 }
               }
             }.help(store.accountStatus[account.id] ?? account.address)
@@ -264,13 +268,15 @@ struct SidebarView: View {
             Task { await store.toggleDemo() }
           } label: {
             Label("示例模式 · 返回真实邮箱", systemImage: "eye").font(.system(size: 11))
-          }.buttonStyle(.plain).foregroundStyle(Theme.accent)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }.buttonStyle(AreaButtonStyle()).foregroundStyle(Theme.accent)
         }
         Button {
           store.showSettings = true
         } label: {
           Label("设置", systemImage: "gearshape").font(.system(size: 13))
-        }.buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }.buttonStyle(AreaButtonStyle())
         HStack(spacing: 7) {
           Circle().fill(store.syncing.isEmpty ? Theme.accent : Color.orange).frame(
             width: 6, height: 6)
@@ -298,7 +304,7 @@ struct SidebarView: View {
         if count > 0 { Text(String(count)).font(.system(size: 12)) }
       }.padding(.horizontal, 12).padding(.vertical, 11).background(
         store.scope == scope ? Theme.selected : Color.clear, in: RoundedRectangle(cornerRadius: 7))
-    }.buttonStyle(.plain).foregroundStyle(store.scope == scope ? Theme.accent : Theme.ink)
+    }.buttonStyle(AreaButtonStyle()).foregroundStyle(store.scope == scope ? Theme.accent : Theme.ink)
   }
   func folderTitle(_ f: Folder) -> String {
     [
@@ -338,7 +344,7 @@ struct WelcomeView: View {
           Text("预览示例界面")
         }.buttonStyle(OutlineButtonStyle())
       }.padding(.top, 9)
-      Button("或导入一封 .eml 邮件") { store.importMessage() }.buttonStyle(.plain).font(.system(size: 12))
+      Button("或导入一封 .eml 邮件") { store.importMessage() }.buttonStyle(AreaButtonStyle()).font(.system(size: 12))
         .foregroundStyle(Theme.muted)
     }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center).padding(60)
   }
@@ -363,7 +369,7 @@ struct MessageListPane: View {
             store.search = ""
           } label: {
             Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.muted)
-          }.buttonStyle(.plain)
+          }.buttonStyle(AreaButtonStyle())
         } else {
           Text("⌘ F").font(.system(size: 10)).foregroundStyle(Theme.muted)
         }
@@ -386,7 +392,7 @@ struct MessageListPane: View {
             : "没有找到匹配的邮件").font(.system(size: 13))
           if let error = store.visibleSyncError, store.search.isEmpty {
             Text(error).font(.system(size: 12)).multilineTextAlignment(.center).padding(.horizontal, 20)
-            Button("重新同步") { store.refresh() }.buttonStyle(.plain).foregroundStyle(Theme.accent)
+            Button("重新同步") { store.refresh() }.buttonStyle(AreaButtonStyle()).foregroundStyle(Theme.accent)
           } else {
             Text("仅搜索已同步的摘要与缓存正文").font(.system(size: 10)).foregroundStyle(Theme.muted)
           }
@@ -401,7 +407,7 @@ struct MessageListPane: View {
         Text(store.search.isEmpty ? "最近邮件 · 正文按需读取" : "搜索范围：本地已同步内容").font(.system(size: 10))
           .foregroundStyle(Theme.muted)
         Spacer()
-        Button("加载更多") { store.loadOlder() }.buttonStyle(.plain).font(.system(size: 10))
+        Button("加载更多") { store.loadOlder() }.buttonStyle(AreaButtonStyle()).font(.system(size: 10))
           .foregroundStyle(Theme.accent)
       }.padding(.horizontal, 18).padding(.vertical, 12).background(Color.white)
     }.background(Color(hex: "FCFCFB")).onChange(of: store.search) { _, _ in store.searchChanged() }
@@ -415,12 +421,12 @@ struct MessageListPane: View {
       Text(name).font(.system(size: 12, weight: store.unreadOnly == unread ? .semibold : .regular))
         .foregroundStyle(store.unreadOnly == unread ? Theme.accent : Theme.muted).padding(
           .vertical, 3
-        ).overlay(alignment: .bottom) {
+        ).padding(.horizontal, 6).frame(minHeight: 28).contentShape(Rectangle()).overlay(alignment: .bottom) {
           if store.unreadOnly == unread {
             Rectangle().fill(Theme.accent).frame(height: 2).offset(y: 11)
           }
         }
-    }.buttonStyle(.plain)
+    }.buttonStyle(AreaButtonStyle())
   }
 }
 
@@ -477,7 +483,7 @@ struct DraftListView: View {
                           await store.reload()
                         } catch { store.errorMessage = userError(error) }
                       }
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(AreaButtonStyle())
                   }
                 }
               }.padding(24)

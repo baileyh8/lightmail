@@ -20,7 +20,7 @@ struct ReaderView: View {
               HStack {
                 Text(loadImages ? "已显示本封邮件的远程图片" : "远程图片未加载").foregroundStyle(Theme.muted)
                 Button(loadImages ? "隐藏图片" : "显示图片") { loadImages.toggle() }
-                  .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                  .buttonStyle(AreaButtonStyle()).foregroundStyle(Theme.accent)
               }.font(.system(size: 11)).padding(.horizontal, 36).padding(.bottom, 12)
             }
             SafeHTMLView(html: body.html, loadImages: loadImages).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -28,11 +28,14 @@ struct ReaderView: View {
             HStack(spacing: 12) {
               replyActions
               if !body.attachments.isEmpty {
-                Menu("附件（\(body.attachments.count)）") {
+                Menu {
                   ForEach(body.attachments) { attachment in
                     Button(attachment.filename) { store.download(attachment) }
                   }
-                }.menuStyle(.borderlessButton).fixedSize()
+                } label: {
+                  Text("附件（\(body.attachments.count)）").padding(.horizontal, 6)
+                    .frame(minHeight: 28).contentShape(Rectangle())
+                }.menuStyle(.button).buttonStyle(AreaButtonStyle()).fixedSize()
               }
               Spacer()
             }.padding(.horizontal, 36).padding(.vertical, 18)
@@ -143,7 +146,8 @@ struct ReaderView: View {
                   Button("转发") { store.newDraft(reply: "forward") }
                 } label: {
                   Label("更多回复", systemImage: "arrowshape.turn.up.right")
-                }.menuStyle(.borderlessButton).fixedSize().padding(8)
+                    .padding(8).contentShape(Rectangle())
+                }.menuStyle(.button).buttonStyle(AreaButtonStyle()).fixedSize()
               }
   }
   var toolbar: some View {
@@ -153,7 +157,7 @@ struct ReaderView: View {
           store.focusReading = false
         } label: {
           Label("返回列表", systemImage: "chevron.left").font(.system(size: 12))
-        }.buttonStyle(.plain).foregroundStyle(Theme.ink)
+        }.buttonStyle(AreaButtonStyle()).foregroundStyle(Theme.ink)
         Divider().frame(height: 20)
       }
       IconButton(symbol: "archivebox", help: "归档") { store.moveSelected(to: "archive") }.disabled(
@@ -180,7 +184,8 @@ struct ReaderView: View {
         Button("转发") { store.newDraft(reply: "forward") }
       } label: {
         Image(systemName: "ellipsis").font(.system(size: 19)).foregroundStyle(Theme.muted)
-      }.menuStyle(.borderlessButton).fixedSize().disabled(store.selectedMessage == nil)
+          .frame(width: 32, height: 32).contentShape(Rectangle())
+      }.menuStyle(.button).buttonStyle(AreaButtonStyle()).fixedSize().disabled(store.selectedMessage == nil)
       Spacer(minLength: 12)
       if store.focusReading {
         Picker("阅读模式", selection: $store.readingMode) {
@@ -198,19 +203,24 @@ struct ReaderView: View {
           Label("全文翻译", systemImage: "translate")
         }.buttonStyle(OutlineButtonStyle()).disabled(store.body == nil)
       }
-      Menu {
-        Button("复制当前视图") { store.copyMarkdown() }
-        Divider()
-        Button("原文 Markdown") { store.copyMarkdown(mode: .original) }
-        Button("译文 Markdown") { store.copyMarkdown(mode: .translated) }.disabled(
-          store.translation == nil)
-        Button("双语 Markdown") { store.copyMarkdown(mode: .bilingual) }.disabled(
-          store.translation == nil)
-      } label: {
-        Label("复制 Markdown", systemImage: "doc.on.doc").font(.system(size: 12))
-      } primaryAction: {
-        store.copyMarkdown()
-      }.menuStyle(.borderlessButton).fixedSize().disabled(store.body == nil)
+      HStack(spacing: 0) {
+        Button { store.copyMarkdown() } label: {
+          Label("复制 Markdown", systemImage: "doc.on.doc").font(.system(size: 12))
+            .padding(.horizontal, 6).frame(minHeight: 32).contentShape(Rectangle())
+        }.buttonStyle(AreaButtonStyle())
+        Menu {
+          Button("复制当前视图") { store.copyMarkdown() }
+          Divider()
+          Button("原文 Markdown") { store.copyMarkdown(mode: .original) }
+          Button("译文 Markdown") { store.copyMarkdown(mode: .translated) }.disabled(
+            store.translation == nil)
+          Button("双语 Markdown") { store.copyMarkdown(mode: .bilingual) }.disabled(
+            store.translation == nil)
+        } label: {
+          Image(systemName: "chevron.down").font(.system(size: 9))
+            .frame(width: 28, height: 32).contentShape(Rectangle())
+        }.menuStyle(.button).buttonStyle(AreaButtonStyle()).accessibilityLabel("Markdown 复制选项")
+      }.fixedSize().disabled(store.body == nil)
     }
   }
   var translationStatus: some View {
@@ -250,20 +260,20 @@ struct ReaderView: View {
             }
           } label: {
             Text(config.engine == "system" ? "系统翻译" : config.model).font(.system(size: 10))
-              .lineLimit(1)
-          }.menuStyle(.borderlessButton).fixedSize()
+              .lineLimit(1).padding(.horizontal, 6).frame(minHeight: 28).contentShape(Rectangle())
+          }.menuStyle(.button).buttonStyle(AreaButtonStyle()).fixedSize()
         }
         if store.translationConfig?.engine == "system" {
           Button("语言包…") { store.cancelTranslation(); showLanguages = true }
-            .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Theme.accent)
+            .buttonStyle(AreaButtonStyle()).font(.system(size: 11)).foregroundStyle(Theme.accent)
         }
         if store.translating {
           Button("取消") {
             store.cancelTranslation()
             store.translationProgress = "翻译已取消"
-          }.buttonStyle(.plain).font(.system(size: 11))
+          }.buttonStyle(AreaButtonStyle()).font(.system(size: 11))
         } else {
-          Button("重译") { store.beginTranslation(force: true) }.buttonStyle(.plain).font(
+          Button("重译") { store.beginTranslation(force: true) }.buttonStyle(AreaButtonStyle()).font(
             .system(size: 11)
           ).foregroundStyle(Theme.muted)
         }
@@ -305,6 +315,7 @@ struct FlowAttachments: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       ForEach(attachments) { attachment in
+        Button { download(attachment) } label: {
         HStack(spacing: 10) {
           Image(systemName: "doc").font(.system(size: 22, weight: .light))
           VStack(alignment: .leading, spacing: 4) {
@@ -312,14 +323,13 @@ struct FlowAttachments: View {
             Text(humanSize(attachment.size)).font(.system(size: 10)).foregroundStyle(Theme.muted)
           }
           Spacer()
-          Button {
-            download(attachment)
-          } label: {
-            Image(systemName: "arrow.down.to.line").font(.system(size: 16))
-          }.buttonStyle(.plain).help("下载附件")
+          Image(systemName: "arrow.down.to.line").font(.system(size: 16))
         }.padding(12).frame(maxWidth: 340).background(
           Theme.sidebar, in: RoundedRectangle(cornerRadius: 7)
         ).overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.line))
+          .contentShape(Rectangle())
+        }.buttonStyle(AreaButtonStyle()).help("下载附件")
+          .accessibilityLabel("下载附件：\(attachment.filename)")
       }
     }
   }

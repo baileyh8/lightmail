@@ -38,6 +38,7 @@ struct SettingsView: View {
         Link("使用条款", destination: URL(string: "https://lightmail.sohym.com/terms/")!)
       }.font(.system(size: 12)).padding(.horizontal, 24).padding(.vertical, 10)
     }.frame(width: 960, height: 700).background(Color.white)
+      .disclosureGroupStyle(AreaDisclosureStyle())
   }
   var accountsPanel: some View {
     HSplitView {
@@ -50,7 +51,7 @@ struct SettingsView: View {
             editingNew = true
           } label: {
             Image(systemName: "plus")
-          }.buttonStyle(.plain)
+          }.buttonStyle(AreaButtonStyle())
         }.padding(.bottom, 12)
         ForEach(store.accounts) { a in
           Button {
@@ -66,8 +67,8 @@ struct SettingsView: View {
               Spacer()
             }.padding(10).background(
               selectedAccount?.id == a.id ? Theme.selected : Color.clear,
-              in: RoundedRectangle(cornerRadius: 6))
-          }.buttonStyle(.plain)
+              in: RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle())
+          }.buttonStyle(AreaButtonStyle())
         }
         Spacer()
         Text("凭证保存在 macOS Keychain。\n账号数据保存在本机。").font(.system(size: 11)).foregroundStyle(
@@ -127,7 +128,7 @@ struct SettingsView: View {
             if store.selectedTranslationID.isEmpty { store.selectedTranslationID = c.id }
           } label: {
             Image(systemName: "plus")
-          }.buttonStyle(.plain)
+          }.buttonStyle(AreaButtonStyle())
         }.padding(.bottom, 10)
         ForEach(store.translationConfigs) { c in
           Button {
@@ -147,8 +148,8 @@ struct SettingsView: View {
               }
             }.padding(10).background(
               (selectedConfigID.isEmpty ? store.translationConfig?.id : selectedConfigID) == c.id
-                ? Theme.selected : Color.clear, in: RoundedRectangle(cornerRadius: 6))
-          }.buttonStyle(.plain)
+                ? Theme.selected : Color.clear, in: RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle())
+          }.buttonStyle(AreaButtonStyle())
         }
         Spacer()
         Text("只在你点击翻译时请求。\n译文缓存到本机。").font(.system(size: 11)).foregroundStyle(Theme.muted)
@@ -203,7 +204,7 @@ struct SettingsView: View {
       Text("受保护内容：本地草稿、待发送记录和你下载到其他文件夹的附件。").font(.system(size: 12)).foregroundStyle(Theme.muted)
       Divider()
       HStack {
-        Text("轻邮 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.1") · macOS 原生应用").font(.system(size: 12)).foregroundStyle(Theme.muted)
+        Text("轻邮 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.2") · macOS 原生应用").font(.system(size: 12)).foregroundStyle(Theme.muted)
         Spacer()
         Button(store.demoMode ? "返回真实邮箱" : "打开示例预览") {
           Task {
@@ -316,7 +317,7 @@ struct AccountEditor: View {
         if let current = store.accountStatus[account.id] {
           Text(current).font(.system(size: 12)).foregroundStyle(Theme.muted)
         }
-        Button("移除此邮箱", role: .destructive) { confirmRemoval = true }.buttonStyle(.plain).font(
+        Button("移除此邮箱", role: .destructive) { confirmRemoval = true }.buttonStyle(AreaButtonStyle()).font(
           .system(size: 12)
         ).padding(.top, 10)
       }

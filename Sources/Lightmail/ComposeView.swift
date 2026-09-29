@@ -40,9 +40,7 @@ struct ComposeView: View {
         }.font(.system(size: 12)).padding(.vertical, 12)
         Divider()
         recipient("收件人", text: $draft.to) {
-          Button(extraRecipients ? "收起" : "抄送 / 密送") { extraRecipients.toggle() }.buttonStyle(
-            .plain
-          ).font(.system(size: 11)).foregroundStyle(Theme.muted)
+          Button(extraRecipients ? "收起" : "抄送 / 密送") { extraRecipients.toggle() }.buttonStyle(AreaButtonStyle()).font(.system(size: 11)).foregroundStyle(Theme.muted)
         }
         if extraRecipients || !draft.cc.isEmpty || !draft.bcc.isEmpty {
           recipient("抄送", text: $draft.cc) { EmptyView() }
@@ -68,7 +66,7 @@ struct ComposeView: View {
                   draft.attachmentPaths.removeAll { $0 == path }
                 } label: {
                   Image(systemName: "xmark.circle.fill")
-                }.buttonStyle(.plain)
+                }.buttonStyle(AreaButtonStyle())
               }.font(.system(size: 11)).padding(9).background(
                 Theme.sidebar, in: RoundedRectangle(cornerRadius: 6))
             }
@@ -90,7 +88,7 @@ struct ComposeView: View {
           attach()
         } label: {
           Label("添加附件", systemImage: "paperclip")
-        }.buttonStyle(.plain).font(.system(size: 12))
+        }.buttonStyle(AreaButtonStyle()).font(.system(size: 12))
         Spacer()
         Text("发送后有 5 秒撤销时间").font(.system(size: 11)).foregroundStyle(Theme.muted)
       }.padding(23)
