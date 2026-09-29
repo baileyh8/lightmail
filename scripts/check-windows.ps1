@@ -5,6 +5,8 @@ $root = (New-Item -ItemType Directory -Force build/windows-acceptance).FullName
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;
+using System.Collections.Generic;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 public static class WindowCapture {
  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
@@ -13,8 +15,36 @@ public static class WindowCapture {
  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref Point p);
  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out Rect r, int size);
  public static bool Frame(IntPtr h, out Rect r) { return DwmGetWindowAttribute(h, 9, out r, 16) == 0 || GetWindowRect(h, out r); }
+ // Toolhelp avoids WMI initialization blocking the screenshot handshake.
+ // Layout: https://learn.microsoft.com/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w
+ [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct ProcessEntry {
+  public uint Size, Usage, Id; public UIntPtr Heap; public uint Module, Threads, Parent;
+  public int Priority; public uint Flags;
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string Name;
+ }
+ public sealed class ProcessNode { public int ProcessId, ParentProcessId; public string Name; }
+ [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+ [DllImport("kernel32.dll", EntryPoint = "Process32FirstW", SetLastError = true)] static extern bool Process32First(IntPtr snapshot, ref ProcessEntry entry);
+ [DllImport("kernel32.dll", EntryPoint = "Process32NextW", SetLastError = true)] static extern bool Process32Next(IntPtr snapshot, ref ProcessEntry entry);
+ [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+ public static ProcessNode[] Processes() {
+  IntPtr snapshot = CreateToolhelp32Snapshot(2, 0);
+  if (snapshot == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+  try {
+   var rows = new List<ProcessNode>();
+   var entry = new ProcessEntry { Size = (uint)Marshal.SizeOf(typeof(ProcessEntry)) };
+   if (!Process32First(snapshot, ref entry)) throw new Win32Exception(Marshal.GetLastWin32Error());
+   do { rows.Add(new ProcessNode { ProcessId = (int)entry.Id, ParentProcessId = (int)entry.Parent, Name = entry.Name }); }
+   while (Process32Next(snapshot, ref entry));
+   int error = Marshal.GetLastWin32Error();
+   if (error != 18) throw new Win32Exception(error);
+   return rows.ToArray();
+  } finally { CloseHandle(snapshot); }
+ }
 }
 '@
+$ownProcess = @([WindowCapture]::Processes() | Where-Object { $_.ProcessId -eq $PID })
+if ($ownProcess.Count -ne 1 -or $ownProcess[0].ParentProcessId -le 0 -or $ownProcess[0].Name -notmatch '^pwsh\.exe$') { throw 'Native process snapshot failed to identify the collector and its parent' }
 function Capture($process, $name) {
     $process.Refresh()
     if ($process.MainWindowHandle -eq [IntPtr]::Zero) { return }
@@ -53,13 +83,14 @@ if (-not $InstallerOnly) {
     $data = Join-Path $root 'native-data'; $report = Join-Path $root 'native'
     $process = Start-Process target/release/Lightmail.exe -ArgumentList @('--demo','--run-acceptance','--data-dir',"`"$data`"",'--acceptance-dir',"`"$report`"") -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(150); $peak = 0; $treePeak = 0; $captured = $false
-    $nextTreeSample = [DateTime]::MinValue
+    $nextTreeSample = [DateTime]::MinValue; $sampleMaxMs = 0
     try {
         while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
             $process.Refresh(); $peak = [Math]::Max($peak, $process.WorkingSet64)
             if ($peak -gt 500MB) { throw "Native UI exceeded 500 MiB working set: $peak" }
             if ([DateTime]::UtcNow -ge $nextTreeSample) {
-                $children = @(Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" | Select-Object ProcessId, ParentProcessId)
+                $sampleTimer = [System.Diagnostics.Stopwatch]::StartNew()
+                $children = @([WindowCapture]::Processes() | Where-Object { $_.Name -eq 'msedgewebview2.exe' })
                 $ids = [System.Collections.Generic.HashSet[int]]::new(); $null = $ids.Add($process.Id)
                 do {
                     $count = $ids.Count
@@ -68,6 +99,7 @@ if (-not $InstallerOnly) {
                 $treeBytes = 0
                 foreach ($childId in $ids) { $child = Get-Process -Id $childId -ErrorAction SilentlyContinue; if ($child) { $treeBytes += $child.WorkingSet64 } }
                 $treePeak = [Math]::Max($treePeak, $treeBytes)
+                $sampleMaxMs = [Math]::Max($sampleMaxMs, $sampleTimer.Elapsed.TotalMilliseconds)
                 if ($treePeak -gt 1GB) { throw "App and WebView2 tree exceeded 1 GiB working set: $treePeak" }
                 $nextTreeSample = [DateTime]::UtcNow.AddSeconds(1)
             }
@@ -88,10 +120,13 @@ if (-not $InstallerOnly) {
         if ($process.ExitCode -ne 0) { throw "Native acceptance exited $($process.ExitCode)" }
         $result = Get-Content "$report/native-acceptance.json" -Raw | ConvertFrom-Json
         if (-not $result.passed) { throw "Native acceptance failed: $($result.error)" }
-        $checks = @($result.checks) + @('reader-visible-pixels')
+        $checks = @($result.checks) + @('reader-visible-pixels', 'native-process-snapshot')
         @{ peakAppWorkingSetMiB = [Math]::Round($peak / 1MB, 2); peakProcessTreeWorkingSetMiB = [Math]::Round($treePeak / 1MB, 2); checks = $checks; passed = $true; boundary = 'Process tree sums app and descendant WebView2 working sets, potentially counting shared pages twice; dedicated GPU memory excluded' } | ConvertTo-Json | Set-Content "$root/result.json"
         Write-Output "Native UI: $($result.checks.Count) checks passed; app peak $([Math]::Round($peak / 1MB, 2)) MiB"
-    } finally { if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force } }
+    } finally {
+        @{ peakSamplingDurationMs = [Math]::Round($sampleMaxMs, 2); peakAppWorkingSetMiB = [Math]::Round($peak / 1MB, 2); peakProcessTreeWorkingSetMiB = [Math]::Round($treePeak / 1MB, 2) } | ConvertTo-Json | Set-Content "$root/collector-metrics.json"
+        if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+    }
 }
 # Install the unmodified, already-packaged release binary into a disposable directory.
 $installer = Get-ChildItem dist/*-windows-x64-setup.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
