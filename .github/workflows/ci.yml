@@ -1,0 +1,40 @@
+name: macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Toolchains
+        run: |
+          swift --version
+          rustup update stable --no-self-update
+          rustup default stable
+          cargo --version
+      - name: Build app
+        run: bash scripts/build.sh
+      - name: Isolated checks
+        run: python3 scripts/check.py
+      - name: Package app
+        run: bash scripts/package.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lightmail-macos-arm64
+          path: |
+            dist/Lightmail-*-macos-arm64.zip
+            dist/SHA256SUMS.txt
+          retention-days: 7

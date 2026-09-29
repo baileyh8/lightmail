@@ -1,0 +1,25 @@
+.tooling/
+.build/
+target/
+build/
+dist/
+.DS_Store
+*.log
+.env*
+!.env.example
+__pycache__/
+*.pyc
+*.sqlite*
+*.db
+*.eml
+*.pem
+*.key
+*.p12
+*.mobileprovision
+# Local acceptance data, private screenshots and development history.
+/validation/
+/docs/validation/
+/docs/0*.md
+/docs/IMPLEMENTATION.md
+/design/
+/website/
