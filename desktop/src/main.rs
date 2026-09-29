@@ -6,6 +6,7 @@ mod acceptance;
 mod app;
 mod assets;
 mod events;
+mod instance;
 mod platform;
 mod shortcuts;
 mod views;
@@ -44,12 +45,30 @@ fn main() {
             .data_local_dir()
             .to_path_buf()
     });
-    let engine = lightmail_core::MailEngine::new(
-        root.join(if demo { "Preview" } else { "Mail" })
-            .to_string_lossy()
-            .into_owned(),
-    )
-    .expect("Open local mail database");
+    let directory = root.join(if demo { "Preview" } else { "Mail" });
+    // Held until the process exits, beyond Application::run.
+    let _instance = match instance::DirectoryLock::acquire_within(
+        &directory,
+        std::time::Duration::from_secs(3),
+    ) {
+        Ok(lock) => lock,
+        Err(error) => {
+            let running = error.kind() == std::io::ErrorKind::WouldBlock;
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Info)
+                .set_title("轻邮 Lightmail")
+                .set_description(if running {
+                    "轻邮已经在运行。同一个邮箱数据目录只能由一个窗口打开。".to_string()
+                } else {
+                    format!("无法打开邮箱数据目录：{error}")
+                })
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
+            std::process::exit(if running { 0 } else { 1 });
+        }
+    };
+    let engine = lightmail_core::MailEngine::new(directory.to_string_lossy().into_owned())
+        .expect("Open local mail database");
     if demo {
         engine.seed_demo().expect("Prepare synthetic demo");
     }
