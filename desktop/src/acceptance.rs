@@ -110,7 +110,12 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Allow the actual platform window to finish its first layout.
             for _ in 0..8{pause(cx).await;}
             click(&view,handle,"message-0",true,cx)?;
-            for _ in 0..20{pause(cx).await;}
+            for _ in 0..120 {
+                pause(cx).await;
+                if handle.update(cx,|_,_,cx| view.read(cx).reader.is_some() || view.read(cx).reader_error.is_some())? { break; }
+            }
+            // Native WebView creation and navigation complete independently.
+            for _ in 0..8 { pause(cx).await; }
             handle.update(cx,|_,_,cx|{let s=view.read(cx);anyhow::ensure!(s.body.is_some()&&!s.loading&&s.reader_error.is_none(),"Reader did not finish");Ok::<_,anyhow::Error>(())})??;
             let document=dom(&view,handle,"JSON.stringify({text:document.body.innerText,links:document.links.length,csp:document.querySelector('meta[http-equiv]').content})",cx).await?;
             let document:serde_json::Value=serde_json::from_str(document.as_str().ok_or_else(||anyhow::anyhow!("Reader JSON"))?)?;

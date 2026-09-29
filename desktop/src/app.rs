@@ -9,6 +9,7 @@ use gpui_component::{
 };
 use lightmail_core::Result;
 use lightmail_core::*;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle, WindowHandle};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -25,6 +26,7 @@ pub enum Page {
     Compose,
 }
 pub struct MailDesktop {
+    pub focus: FocusHandle,
     pub focus_reading: bool,
     pub plain_reading: bool,
     pub adding_account: bool,
@@ -84,6 +86,7 @@ pub struct MailDesktop {
     body_task: Option<Task<()>>,
     translation_task: Option<Task<()>>,
     search_task: Option<Task<()>>,
+    reader_task: Option<Task<()>>,
     _events_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -101,6 +104,8 @@ impl MailDesktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let focus = cx.focus_handle();
+        window.focus(&focus);
         let platform = Arc::new(DesktopPlatform::default());
         let (events, receiver) = Events::new();
         let service = MailApplication::new(engine.clone(), platform.clone(), events.clone());
@@ -169,6 +174,7 @@ impl MailDesktop {
             }
         });
         let mut app = Self {
+            focus,
             focus_reading: false,
             plain_reading: false,
             adding_account: false,
@@ -228,6 +234,7 @@ impl MailDesktop {
             body_task: None,
             translation_task: None,
             search_task: None,
+            reader_task: None,
             _events_task: event_task,
             _subscriptions: subscriptions,
         };
@@ -1208,9 +1215,23 @@ impl MailDesktop {
                             self.reader_error = Some(format!("正文显示失败：{e}"));
                         }
                     });
-                } else {
+                } else if self.reader_task.is_none() {
+                    // WebView2's synchronous builder pumps native messages. Calling it
+                    // inside GPUI render re-enters the borrowed window/application.
+                    // The async builder returns to the normal event loop instead.
+                    let native = match HasWindowHandle::window_handle(window) {
+                        Ok(handle) => ReaderHost(handle.as_raw()),
+                        Err(_) => {
+                            self.reader_error = Some("无法取得阅读窗口".into());
+                            return;
+                        }
+                    };
+                    let handle = gpui::Window::window_handle(window);
+                    self.record("reader-start");
+                    self.reader_task = Some(cx.spawn(async move |this, cx| {
                     let webview = wry::WebViewBuilder::new()
                         .with_incognito(true)
+                        .with_visible(false)
                         .with_javascript_disabled()
                         .with_html(&html)
                         .with_navigation_handler(|url| {
@@ -1233,14 +1254,36 @@ impl MailDesktop {
                             }
                             wry::NewWindowResponse::Deny
                         })
-                        .build_as_child(window);
-                    match webview {Ok(view)=>self.reader=Some(cx.new(|cx|WebView::new(view,window,cx))),Err(_)=>self.reader_error=Some("无法启动系统网页阅读器。Windows 请安装 Microsoft Edge WebView2 Runtime。".into())}
+                        .build_as_child_async(&native).await;
+                    let _ = handle.update(cx, |_, window, cx| this.update(cx, |s, cx| {
+                        match webview {
+                            Ok(view) => {
+                                s.reader = Some(cx.new(|cx| { let mut reader = WebView::new(view, window, cx); reader.hide(); reader }));
+                                s.reader_dirty = true;
+                            }
+                            Err(_) => s.reader_error = Some("无法启动系统网页阅读器。Windows 请安装 Microsoft Edge WebView2 Runtime。".into()),
+                        }
+                        s.reader_task = None;
+                        s.record("reader-created");
+                        cx.notify();
+                    }));
+                    }));
                 }
             }
             Err(e) => self.reader_error = Some(e.to_string()),
         }
         self.reader_dirty = false;
         self.record("reader-render");
+    }
+}
+// Used only on the main thread while the owning window/view remains alive.
+// Dropping MailDesktop cancels reader_task before its native parent is destroyed.
+struct ReaderHost(RawWindowHandle);
+impl HasWindowHandle for ReaderHost {
+    fn window_handle(
+        &self,
+    ) -> std::result::Result<WindowHandle<'_>, raw_window_handle::HandleError> {
+        Ok(unsafe { WindowHandle::borrow_raw(self.0) })
     }
 }
 pub fn date(timestamp: i64) -> String {

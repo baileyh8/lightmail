@@ -458,7 +458,7 @@ impl MailDesktop {
                                                 .min_w_0()
                                                 .overflow_hidden()
                                                 .text_ellipsis()
-                                                .whitespace_nowrap()
+                                                .line_clamp(1)
                                                 .text_size(px(13.))
                                                 .font_weight(if m.unread {
                                                     FontWeight::SEMIBOLD
@@ -479,7 +479,7 @@ impl MailDesktop {
                                         .flex_shrink_0()
                                         .overflow_hidden()
                                         .text_ellipsis()
-                                        .whitespace_nowrap()
+                                        .line_clamp(1)
                                         .text_size(px(12.))
                                         .child(m.subject),
                                 )
@@ -497,7 +497,7 @@ impl MailDesktop {
                                             .flex_shrink_0()
                                             .overflow_hidden()
                                             .text_ellipsis()
-                                            .whitespace_nowrap(),
+                                            .line_clamp(1),
                                         )
                                         .child(
                                             muted(account)
@@ -506,7 +506,7 @@ impl MailDesktop {
                                                 .text_right()
                                                 .overflow_hidden()
                                                 .text_ellipsis()
-                                                .whitespace_nowrap(),
+                                                .line_clamp(1),
                                         ),
                                 )
                                 .child(
@@ -518,7 +518,8 @@ impl MailDesktop {
                                         .h(px(0.5))
                                         .bg(rgb(LINE)),
                                 )
-                                .on_click(cx.listener(move |s, event: &ClickEvent, _, cx| {
+                                .on_click(cx.listener(move |s, event: &ClickEvent, window, cx| {
+                                    window.focus(&s.focus);
                                     s.select(id.clone(), cx);
                                     if event.click_count() > 1 {
                                         s.focus_reading = true;
@@ -794,6 +795,12 @@ impl MailDesktop {
                 )),
         );
         if let Some(message) = &self.selected {
+            let account = self
+                .accounts
+                .iter()
+                .find(|a| a.id == message.account_id)
+                .map(|a| a.name.clone())
+                .unwrap_or_default();
             let mut header = column()
                 .px(px(36.))
                 .pt_6()
@@ -804,6 +811,18 @@ impl MailDesktop {
                         .text_xl()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(message.subject.clone()),
+                )
+                .child(
+                    row().child(
+                        div()
+                            .px_2()
+                            .py(px(2.))
+                            .rounded(px(3.))
+                            .bg(rgb(SELECTED))
+                            .text_color(rgb(ACCENT))
+                            .text_size(px(11.))
+                            .child(account),
+                    ),
                 )
                 .child(
                     row()
@@ -972,6 +991,7 @@ impl MailDesktop {
         let mut root = column().flex_1().h_full().child(
             row()
                 .h(px(70.))
+                .flex_shrink_0()
                 .px(px(36.))
                 .border_b_1()
                 .border_color(rgb(LINE))
@@ -1028,6 +1048,8 @@ impl MailDesktop {
         );
         if self.page == Page::Accounts {
             let mut accounts = column()
+                .id("settings-account-list")
+                .overflow_y_scroll()
                 .w(px(230.))
                 .flex_shrink_0()
                 .p_4()
@@ -1255,13 +1277,14 @@ impl MailDesktop {
                         )
                         .into_any_element()
                 } else {
-                    form.into_any_element()
+                    form.h_full().into_any_element()
                 };
             root = root.child(
                 row()
                     .items_start()
                     .flex_1()
                     .min_h_0()
+                    .overflow_hidden()
                     .gap_0()
                     .child(accounts.h_full())
                     .child(form),
@@ -1431,6 +1454,7 @@ impl Render for MailDesktop {
         };
         div()
             .id("lightmail-root")
+            .track_focus(&self.focus)
             .key_context("Lightmail")
             .on_action(cx.listener(|s, _: &NewMessage, w, cx| s.new_draft(ComposeMode::New, w, cx)))
             .on_action(cx.listener(|s, _: &FocusSearch, w, cx| {

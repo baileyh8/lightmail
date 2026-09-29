@@ -23,6 +23,15 @@ fn main() {
             .map(std::path::PathBuf::from)
     };
     let acceptance = argument("--acceptance-dir");
+    if demo {
+        if let Some(path) = acceptance.clone() {
+            let _ = std::fs::create_dir_all(&path);
+            std::panic::set_hook(Box::new(move |info| {
+                let trace = std::backtrace::Backtrace::force_capture();
+                let _ = std::fs::write(path.join("panic.txt"), format!("{info}\n{trace}"));
+            }));
+        }
+    }
     #[cfg(feature = "acceptance")]
     let run_acceptance = args.iter().any(|s| s == "--run-acceptance");
     if acceptance.is_some() && !demo {
