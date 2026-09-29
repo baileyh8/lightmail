@@ -5,13 +5,13 @@
   <p>为 Mac 打造的轻量本地邮箱客户端。聚合收发、专注阅读、全文翻译、一键 Markdown。</p>
   <p>A lightweight, native macOS email client. Multiple inboxes. One quiet workspace.</p>
   <p>
-    <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.2"><img src="https://img.shields.io/badge/version-v0.0.2-226451?style=flat-square" alt="v0.0.2"></a>
+    <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.3"><img src="https://img.shields.io/badge/version-v0.0.3-226451?style=flat-square" alt="v0.0.3"></a>
     <img src="https://img.shields.io/badge/macOS-15%2B-363d3a?style=flat-square" alt="macOS 15+">
     <img src="https://img.shields.io/badge/Apple_Silicon-arm64-363d3a?style=flat-square" alt="Apple Silicon">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-226451?style=flat-square" alt="GPL-3.0-or-later"></a>
     <a href="https://github.com/baileyh8/lightmail/actions/workflows/ci.yml"><img src="https://github.com/baileyh8/lightmail/actions/workflows/ci.yml/badge.svg" alt="macOS build and tests"></a>
   </p>
-  <p><a href="https://lightmail.sohym.com">官网</a> · <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.2">下载预览版</a> · <a href="docs/getting-started.md">使用指南</a> · <a href="https://github.com/baileyh8/lightmail/issues">反馈问题</a></p>
+  <p><a href="https://lightmail.sohym.com">官网</a> · <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.3">下载预览版</a> · <a href="docs/getting-started.md">使用指南</a> · <a href="https://github.com/baileyh8/lightmail/issues">反馈问题</a></p>
 </div>
 
 ![轻邮：聚合收件箱与原文阅读](docs/screenshots/inbox.png)
@@ -38,9 +38,9 @@
 
 </details>
 
-## 从 v0.0.2 开始
+## 从 v0.0.3 开始
 
-**需要 Apple Silicon Mac 和 macOS 15+。** 从 [Releases](https://github.com/baileyh8/lightmail/releases/tag/v0.0.2) 下载 ZIP，解压并将 `轻邮.app` 放入 Applications。运行应用不需要额外安装 Node、Python 或 Rust。
+**需要 Apple Silicon Mac 和 macOS 15+。** 从 [Releases](https://github.com/baileyh8/lightmail/releases/tag/v0.0.3) 下载 ZIP，解压并将 `轻邮.app` 放入 Applications。运行应用不需要额外安装 Node、Python 或 Rust。
 
 > 这是早期预览版，当前使用 ad-hoc 签名，尚未做 Apple Developer ID 公证。macOS 可能阻止首次打开；请核对下载来源和 SHA-256，或选择从源码构建。Intel 尚未验证。
 

@@ -5,8 +5,8 @@
 <key>CFBundleDisplayName</key><string>轻邮</string>
 <key>CFBundleExecutable</key><string>Lightmail</string>
 <key>CFBundleIdentifier</key><string>com.bailey.lightmail</string>
-<key>CFBundleVersion</key><string>2</string>
-<key>CFBundleShortVersionString</key><string>0.0.2</string>
+<key>CFBundleVersion</key><string>3</string>
+<key>CFBundleShortVersionString</key><string>0.0.3</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>

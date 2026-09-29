@@ -204,7 +204,7 @@ struct SettingsView: View {
       Text("受保护内容：本地草稿、待发送记录和你下载到其他文件夹的附件。").font(.system(size: 12)).foregroundStyle(Theme.muted)
       Divider()
       HStack {
-        Text("轻邮 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.2") · macOS 原生应用").font(.system(size: 12)).foregroundStyle(Theme.muted)
+        Text("轻邮 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.3") · macOS 原生应用").font(.system(size: 12)).foregroundStyle(Theme.muted)
         Spacer()
         Button(store.demoMode ? "返回真实邮箱" : "打开示例预览") {
           Task {

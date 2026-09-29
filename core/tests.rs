@@ -634,11 +634,55 @@ fn cached_previews_survive_header_refresh_aliases_and_restart() {
     assert_eq!(e.message(&message.id).unwrap().snippet, expected);
     assert_eq!(e.message(&alias.id).unwrap().snippet, expected);
     assert!(e.cached_body(message.id).unwrap().is_some());
+    // A later header rebuild can lose previews even after the migration ran.
+    e.connection().unwrap().execute(
+        "UPDATE messages SET data=json_set(data,'$.snippet','') WHERE canonical_id=?1",
+        [&message.canonical_id],
+    ).unwrap();
+    drop(e);
+    let e = MailEngine::new(dir.path().to_string_lossy().into()).unwrap();
+    assert_eq!(e.message(&alias.id).unwrap().snippet, expected);
     assert_eq!(crate::mime::preview(" \n\t"), "（正文为空）");
     assert_eq!(
         crate::mime::preview(&"字".repeat(100_000)).chars().count(),
         140
     );
+}
+
+#[test]
+fn rebuilt_headers_recover_previews_from_existing_body_cache() {
+    let (_dir, e) = engine();
+    e.seed_demo().unwrap();
+    let mut message = e.list_messages(query()).unwrap()[0].clone();
+    let expected = message.snippet.clone();
+    assert!(!expected.is_empty());
+    // UID/label rediscovery can recreate header rows while the canonical body survives.
+    e.connection().unwrap().execute(
+        "DELETE FROM messages WHERE canonical_id=?1", [&message.canonical_id],
+    ).unwrap();
+    message.snippet.clear();
+    MailEngine::put_message(&e.connection().unwrap(), &message).unwrap();
+    assert_eq!(e.message(&message.id).unwrap().snippet, expected);
+}
+
+#[test]
+fn preload_cache_hit_repairs_empty_alias_previews_without_network() {
+    let (_dir, e) = engine();
+    e.seed_demo().unwrap();
+    let message = e.list_messages(query()).unwrap()[0].clone();
+    let expected = message.snippet.clone();
+    let mut alias = message.clone();
+    alias.id = "cached-preview-alias".into();
+    MailEngine::put_message(&e.connection().unwrap(), &alias).unwrap();
+    e.connection().unwrap().execute(
+        "UPDATE messages SET data=json_set(data,'$.snippet','') WHERE canonical_id=?1",
+        [&message.canonical_id],
+    ).unwrap();
+    let count = e.storage_info().unwrap().body_count;
+    e.preload_body(message.id.clone(), String::new()).unwrap();
+    assert_eq!(e.message(&message.id).unwrap().snippet, expected);
+    assert_eq!(e.message(&alias.id).unwrap().snippet, expected);
+    assert_eq!(e.storage_info().unwrap().body_count, count);
 }
 
 #[test]

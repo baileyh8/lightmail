@@ -57,6 +57,14 @@ impl MailEngine {
                 let previous: MessageSummary = decode(previous)?;
                 merged.snippet = previous.snippet;
                 merged.has_attachments |= previous.has_attachments;
+            } else if let Some((text, has_attachments)) = db.query_row(
+                "SELECT json_extract(data,'$.text'),json_array_length(data,'$.attachments')>0 FROM bodies WHERE id=?1",
+                [&m.canonical_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
+            ).optional().map_err(fail)? {
+                // Headers may be rediscovered after their row was removed while the
+                // canonical body (shared by Gmail labels) is still cached.
+                merged.snippet = mime::preview(&text);
+                merged.has_attachments |= has_attachments;
             }
         }
         let m = &merged;
@@ -80,20 +88,19 @@ impl MailEngine {
     }
     fn store_preview(db: &Connection, canonical: &str, body: &MailBody) -> Result<()> {
         let snippet = mime::preview(&body.text);
-        db.execute("UPDATE messages SET data=json_set(data,'$.snippet',?1,'$.has_attachments',json(?2)) WHERE canonical_id=?3",
+        db.execute("UPDATE messages SET data=json_set(data,'$.snippet',?1,'$.has_attachments',json(?2)) WHERE canonical_id=?3 AND (json_extract(data,'$.snippet') IS NOT ?1 OR json_extract(data,'$.has_attachments') IS NOT json_extract(?2,'$'))",
             params![snippet, if body.attachments.is_empty() { "false" } else { "true" }, canonical]).map_err(fail)?;
         Ok(())
     }
     pub(crate) fn repair_cached_previews(&self) -> Result<()> {
         let db = self.connection()?;
         let done: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key='body-preview-version' AND value='1')", [], |r| r.get(0)).map_err(fail)?;
-        if done {
-            return Ok(());
-        }
         // Retain only IDs, never collect every body into memory during migration.
+        // Empty previews can reappear after header rediscovery, so repair those
+        // on every startup even when the original text migration already ran.
         let ids: Vec<String> = {
-            let mut query = db.prepare("SELECT id FROM bodies").map_err(fail)?;
-            let rows = query.query_map([], |r| r.get(0)).map_err(fail)?;
+            let mut query = db.prepare("SELECT b.id FROM bodies b WHERE ?1=0 OR EXISTS(SELECT 1 FROM messages m WHERE m.canonical_id=b.id AND coalesce(json_extract(m.data,'$.snippet'),'')='')").map_err(fail)?;
+            let rows = query.query_map([done], |r| r.get(0)).map_err(fail)?;
             rows.collect::<std::result::Result<_, _>>().map_err(fail)?
         };
         for id in ids {
@@ -101,14 +108,18 @@ impl MailEngine {
                 .query_row("SELECT data FROM bodies WHERE id=?1", [&id], |r| r.get(0))
                 .map_err(fail)?;
             let mut body: MailBody = decode(json)?;
-            body.text = mime::plain_text(&body.html, &body.markdown);
+            if !done {
+                body.text = mime::plain_text(&body.html, &body.markdown);
+            }
             Self::store_preview(&db, &id, &body)?;
-            let json = encode(&body)?;
-            db.execute(
-                "UPDATE bodies SET data=?1,bytes=?2 WHERE id=?3",
-                params![json, json.len() as i64, id],
-            )
-            .map_err(fail)?;
+            if !done {
+                let json = encode(&body)?;
+                db.execute(
+                    "UPDATE bodies SET data=?1,bytes=?2 WHERE id=?3",
+                    params![json, json.len() as i64, id],
+                )
+                .map_err(fail)?;
+            }
         }
         db.execute("INSERT OR REPLACE INTO settings(key,value,updated) VALUES('body-preview-version','1',?1)", [now()]).map_err(fail)?;
         Ok(())
@@ -407,6 +418,9 @@ impl MailEngine {
                 body.text = mime::plain_text(&body.html, &body.markdown);
                 body.content_hash = mime::hash(&body.markdown);
             }
+            // A cache hit still has to restore the list preview. Both foreground
+            // reads and preload_body use this path and otherwise skip persistence.
+            Self::store_preview(&db, &m.canonical_id, &body)?;
             db.execute(
                 "UPDATE bodies SET touched=?1 WHERE id=?2",
                 params![now(), m.canonical_id],
