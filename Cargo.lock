@@ -4150,6 +4150,7 @@ version = "0.0.4"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
+ "base64 0.22.1",
  "chrono",
  "directories",
  "futures-util",

@@ -117,6 +117,45 @@ pub(crate) fn http_client(
     builder.build().map_err(|_| fail("无法建立网络会话"))
 }
 
+/// Blocking, size-limited GET for optional resources a native reader shows only
+/// on request, such as remote images. It uses the platform proxy route and the
+/// same same-origin redirect policy as every other core HTTP request. Returns the
+/// body and its Content-Type. Rust-only; call it from a plain thread, never from
+/// an async runtime.
+pub fn fetch_resource(
+    platform: Arc<dyn PlatformServices>,
+    url: String,
+    limit: usize,
+) -> Result<(Vec<u8>, String)> {
+    let parsed = url::Url::parse(&url).map_err(|_| fail("资源地址无效"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(fail("只加载网页资源"));
+    }
+    runtime().block_on(async move {
+        let response = http_client(platform.as_ref(), &url, 15)?
+            .get(parsed)
+            .send()
+            .await
+            .map_err(|_| fail("资源下载失败"))?;
+        if !response.status().is_success() {
+            return Err(fail("资源下载失败"));
+        }
+        if response
+            .content_length()
+            .is_some_and(|size| size > limit as u64)
+        {
+            return Err(fail("资源超过处理上限"));
+        }
+        let mime = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        Ok((limited_body(response, limit).await?, mime))
+    })
+}
+
 pub(crate) async fn limited_body(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response
@@ -130,4 +169,69 @@ pub(crate) async fn limited_body(mut response: reqwest::Response, limit: usize) 
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    struct Direct;
+    impl PlatformServices for Direct {
+        fn read_secret(&self, _key: String) -> Result<Option<String>> {
+            Ok(None)
+        }
+        fn write_secret(&self, _key: String, _value: String) -> Result<()> {
+            Ok(())
+        }
+        fn remove_secret(&self, _key: String) -> Result<()> {
+            Ok(())
+        }
+        fn proxy_for(&self, _host: String) -> Result<ProxyRoute> {
+            Ok(ProxyRoute {
+                kind: "direct".into(),
+                host: String::new(),
+                port: 0,
+            })
+        }
+    }
+
+    // Serves each queued body once, with a Content-Length header.
+    fn serve(bodies: Vec<Vec<u8>>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for body in bodies {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut request = [0; 2048];
+                let _ = socket.read(&mut request);
+                let _ = write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(&body);
+            }
+        });
+        format!("http://{address}/pixel.png")
+    }
+
+    #[test]
+    fn resources_are_limited_and_only_fetched_over_the_web() {
+        let platform: Arc<dyn PlatformServices> = Arc::new(Direct);
+        let url = serve(vec![b"small".to_vec(), vec![7; 4096]]);
+        let (bytes, mime) = fetch_resource(platform.clone(), url.clone(), 1024).unwrap();
+        assert_eq!(
+            (bytes.as_slice(), mime.as_str()),
+            (&b"small"[..], "image/png")
+        );
+        assert!(fetch_resource(platform.clone(), url, 1024).is_err());
+        for url in [
+            "file:///C:/private.png",
+            "data:image/png;base64,AAAA",
+            "cid:part",
+        ] {
+            assert!(fetch_resource(platform.clone(), url.into(), 1024).is_err());
+        }
+    }
 }

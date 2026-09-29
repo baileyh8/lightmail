@@ -17,6 +17,7 @@ lightmail_core = { path = ".." }
 # All GPUI and component APIs come through the Kit facade, pinned as one set.
 gpui-kit = { version = "=0.7.0", default-features = false, features = ["component", "assets"] }
 anyhow = "1"
+base64 = "0.22"
 async-channel = "2"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }

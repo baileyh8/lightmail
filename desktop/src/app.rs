@@ -33,6 +33,7 @@ pub struct MailDesktop {
     pub service: Arc<MailApplication>,
     pub platform: Arc<DesktopPlatform>,
     pub events: Arc<Events>,
+    pub remote_images: Arc<crate::images::RemoteImages>,
     pub accounts: Vec<Account>,
     pub folders: Vec<Folder>,
     pub messages: Vec<MessageSummary>,
@@ -109,6 +110,10 @@ impl MailDesktop {
         let platform = Arc::new(DesktopPlatform::default());
         let (events, receiver) = Events::new();
         let service = MailApplication::new(engine.clone(), platform.clone(), events.clone());
+        let remote_images = {
+            let events = events.clone();
+            crate::images::RemoteImages::new(platform.clone(), move || events.image_ready())
+        };
         let mut fields = HashMap::new();
         let mut areas = HashMap::new();
         for (key, prompt) in [
@@ -198,6 +203,7 @@ impl MailDesktop {
             service,
             platform,
             events,
+            remote_images,
             accounts: vec![],
             folders: vec![],
             messages: vec![],
@@ -466,6 +472,7 @@ impl MailDesktop {
         self.translation = None;
         self.mode = ExportMode::Original;
         self.images = false;
+        self.remote_images.reset();
         self.loading = true;
         self.reader_dirty = true;
         self.reader_error = None;
@@ -1227,7 +1234,11 @@ impl MailDesktop {
     /// Image resolver for the current message. Remote images stay placeholders
     /// until the user allows them for this message.
     pub fn image_policy(&self) -> crate::reader::Images {
-        crate::reader::blocked_images()
+        if self.images {
+            self.remote_images.resolver()
+        } else {
+            crate::reader::blocked_images()
+        }
     }
     /// Prepares reader content when the body, translation or mode changed. The
     /// core validates translations and bounds Markdown work; rendering then

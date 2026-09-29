@@ -6,6 +6,7 @@ mod acceptance;
 mod app;
 mod assets;
 mod events;
+mod images;
 mod instance;
 mod platform;
 mod reader;

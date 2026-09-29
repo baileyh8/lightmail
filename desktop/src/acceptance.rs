@@ -135,20 +135,32 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             screenshot(&path,"windows-inbox",cx).await?;
             click(&view,handle,"copy-markdown",false,cx)?;pause(cx).await;
             handle.update(cx,|_,_,cx|{anyhow::ensure!(cx.read_from_clipboard().and_then(|v|v.text()).is_some_and(|s|s.contains("final review")),"Markdown clipboard missing");Ok::<_,anyhow::Error>(())})??;
-            handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{
+            // Prepare and check in one update: a core DataChanged event arriving later
+            // reloads the cached body, so a delayed check would race it.
+            let html_ready=handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{
                 let body=s.body.as_mut().unwrap();
                 body.html=format!("<table style='border:2px solid #226451'><tr><td><a href='https://example.com/synthetic-link'>Visible link</a></td></tr></table><img src='https://example.invalid/pixel.png'><script>document.body.dataset.executed='true'</script>{}",(0..80).map(|i|format!("<p>Scrollable synthetic paragraph {i}</p>")).collect::<String>());
-                s.plain_reading=false;s.reader_dirty=true;cx.notify();
+                s.plain_reading=false;s.reader_dirty=true;s.update_reader();cx.notify();
+                matches!(s.reader,Some(Document::Html(ref text)) if text.contains("<table")&&text.contains("Visible link"))
             }))?;
+            anyhow::ensure!(html_ready,"Restricted HTML reader content missing");
             for _ in 0..8{pause(cx).await;}
             handle.update(cx,|_,_,cx|{
                 let s=view.read(cx);
-                let html=matches!(s.reader,Some(Document::Html(ref text)) if text.contains("<table")&&text.contains("Visible link"));
-                anyhow::ensure!(html,"Restricted HTML reader content missing");
                 anyhow::ensure!(blocks_remote_images(&s.image_policy()),"Remote image loaded without permission");
                 anyhow::ensure!(crate::reader::allowed_link("https://example.com/synthetic-link")&&!crate::reader::allowed_link("javascript:alert(1)"),"Link policy failed");
                 Ok::<_,anyhow::Error>(())
             })??;
+            // Opting in decodes embedded images, but never reaches local files.
+            handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{s.images=true;cx.notify();}))?;
+            handle.update(cx,|_,_,cx|{
+                let images=view.read(cx).image_policy();
+                let pixel="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+                anyhow::ensure!(matches!(images(&SharedUri::from(pixel)),ImageSource::Image(_)),"Allowed embedded image not decoded");
+                anyhow::ensure!(!matches!(images(&SharedUri::from("file:///C:/private.png")),ImageSource::Image(_)),"Local file image loaded");
+                Ok::<_,anyhow::Error>(())
+            })??;
+            handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{s.images=false;s.remote_images.reset();cx.notify();}))?;
             click(&view,handle,"settings",true,cx)?;pause(cx).await;
             click(&view,handle,"settings-demo-work",true,cx)?;pause(cx).await;
             handle.update(cx,|_,_,cx|{anyhow::ensure!(view.read(cx).editing.as_ref().is_some_and(|a|a.id=="demo-work"),"Account whitespace click failed");Ok::<_,anyhow::Error>(())})??;
@@ -167,7 +179,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Same body is rendered repeatedly to exercise renderer reuse, not just conversion.
             for i in 0..60 {handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{s.page=Page::Mail;s.mode=ExportMode::Original;s.reader_dirty=true;s.record(&format!("reader-cycle-{i}"));cx.notify();}))?;pause(cx).await;}
             let platform=Arc::new(DesktopPlatform::default());let key=format!("acceptance:{}",uuid::Uuid::new_v4());platform.write_secret(key.clone(),"synthetic-only".into())?;anyhow::ensure!(platform.read_secret(key.clone())?.as_deref()==Some("synthetic-only"),"Vault roundtrip");platform.remove_secret(key)?;
-            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"checks":["native-window","mail-row-whitespace","reader-native-text","reader-html-links-images","remote-image-policy","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
+            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"checks":["native-window","mail-row-whitespace","reader-native-text","reader-html-links-images","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
         }.await;
         let report=match result{Ok(v)=>v,Err(e)=>serde_json::json!({"passed":false,"error":format!("{e:#}")})};
         let _=std::fs::create_dir_all(&path);let _=std::fs::write(path.join("native-acceptance.json"),report.to_string());
