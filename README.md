@@ -126,6 +126,10 @@ python3 scripts/check.py
 cargo test --locked --release -p lightmail-desktop
 # 安装 Inno Setup 6 后可打包安装程序与便携 ZIP
 ./scripts/package-windows.ps1
+# 验收：先构建带验收功能的版本，再运行原生界面验收，
+# 并在 build/windows-acceptance 里静默安装、卸载刚打好的安装包
+cargo build --locked --release -p lightmail-desktop --features acceptance
+./scripts/check-windows.ps1   # 加 -SoakReads 1500 另做连续阅读的内存检查
 ```
 
 产物：`target/release/Lightmail.exe`。隔离示例：`Lightmail.exe --demo`。Windows 使用 LLM 翻译，不提供 Apple 系统翻译；支持固定 HTTP / SOCKS 系统代理，暂不支持 PAC。

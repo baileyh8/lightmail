@@ -24,6 +24,7 @@ macOS needs Apple Silicon, macOS 15+, Swift 6+, Rust, and Python 3. Windows need
 - `cargo run --locked --example headless -- build/headless-demo`: exercise shared services without Swift.
 - `./scripts/build-windows.ps1`: build the Windows client.
 - `./scripts/package-windows.ps1`: create installer and portable ZIP.
+- `./scripts/check-windows.ps1`: native UI acceptance (build with `--features acceptance` first), then a silent install and uninstall under `build/windows-acceptance`; `-SoakReads N` adds a memory soak.
 - `bash scripts/package.sh`: generate ZIP and checksums.
 
 ## Architecture Boundaries
