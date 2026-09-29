@@ -1,15 +1,15 @@
 use crate::app::{date, MailDesktop, Page};
 use crate::shortcuts::*;
-use gpui::{prelude::*, *};
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants},
-    input::Input,
+    input::{Input, Textarea},
     Disableable, Selectable, Sizable,
 };
-use gpui_component::{
+use gpui_kit::component::{
     menu::{DropdownMenu, PopupMenuItem},
     Icon,
 };
+use gpui_kit::{prelude::*, *};
 use lightmail_core::*;
 
 const INK: u32 = 0x202724;
@@ -35,6 +35,12 @@ fn short_date(ts: i64) -> String {
             .to_string()
         })
         .unwrap_or_default()
+}
+/// Kit sizes single-line inputs 2rem tall with fixed 8px vertical padding and a
+/// 1.25rem line. At Lightmail's 13px rem that leaves under 10px for the text
+/// line and cuts glyphs top and bottom, so single-line inputs get an explicit box.
+fn line_input(input: Input, height: f32) -> Input {
+    Styled::h(input.py(px(4.)), px(height))
 }
 fn column() -> Div {
     div().flex().flex_col().flex_shrink_0().min_w_0().min_h_0()
@@ -532,7 +538,7 @@ impl MailDesktop {
                                         .bg(rgb(LINE)),
                                 )
                                 .on_click(cx.listener(move |s, event: &ClickEvent, window, cx| {
-                                    window.focus(&s.focus);
+                                    window.focus(&s.focus, cx);
                                     s.select(id.clone(), cx);
                                     if event.click_count() > 1 {
                                         s.focus_reading = true;
@@ -575,13 +581,14 @@ impl MailDesktop {
                                     .on_click(cx.listener(|s, _, _, cx| s.refresh(cx))),
                             ),
                     )
-                    .child(
+                    .child(line_input(
                         Input::new(&self.fields["search"])
                             .small()
                             .prefix(icon("search"))
                             .bg(rgb(0xf3f5f3))
                             .text_size(px(12.)),
-                    )
+                        28.,
+                    ))
                     .child(
                         row()
                             .child(
@@ -919,11 +926,25 @@ impl MailDesktop {
                             })),
                     )
                     .into_any_element()
-            } else if let Some(reader) = &self.reader {
+            } else if let Some(document) = &self.reader {
+                let mode = match self.mode {
+                    ExportMode::Original => "original",
+                    ExportMode::Translated => "translated",
+                    ExportMode::Bilingual => "bilingual",
+                };
+                let layout = if self.plain_reading {
+                    "markdown"
+                } else {
+                    "html"
+                };
                 div()
                     .relative()
                     .size_full()
-                    .child(reader.clone())
+                    .child(crate::reader::view(
+                        &format!("{}:{mode}:{layout}", message.id),
+                        document,
+                        self.image_policy(),
+                    ))
                     .child(probe_marker("reader-viewport".into(), cx))
                     .into_any_element()
             } else {
@@ -1003,7 +1024,10 @@ impl MailDesktop {
         column()
             .gap_2()
             .child(muted(label.to_string()))
-            .child(Input::new(&self.fields[key]))
+            .child(match self.areas.get(key) {
+                Some(area) => Textarea::new(area).into_any_element(),
+                None => line_input(Input::new(&self.fields[key]), 30.).into_any_element(),
+            })
     }
     fn settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = column().flex_1().h_full().child(
@@ -1473,7 +1497,10 @@ impl MailDesktop {
                 .border_b_1()
                 .border_color(rgb(LINE))
                 .child(muted(label).w(px(60.)).flex_shrink_0())
-                .child(Input::new(&self.fields[key]).appearance(false).flex_1())
+                .child(line_input(
+                    Input::new(&self.fields[key]).appearance(false).flex_1(),
+                    30.,
+                ))
         };
         column()
             .flex_1()
@@ -1536,7 +1563,7 @@ impl MailDesktop {
             )
             .child(
                 div().flex_1().min_h_0().px_6().py_4().child(
-                    Input::new(&self.fields["draft_body"])
+                    Textarea::new(&self.areas["draft_body"])
                         .appearance(false)
                         .text_size(px(15.))
                         .h_full(),
@@ -1613,7 +1640,7 @@ impl Render for MailDesktop {
             self.clear_secrets = false;
         }
         self.service.set_active(window.is_window_active());
-        self.update_reader(window, cx);
+        self.update_reader();
         let settings = matches!(
             self.page,
             Page::Accounts | Page::Translation | Page::Storage

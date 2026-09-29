@@ -174,7 +174,7 @@ fn remove_value(vault: &dyn Vault, key: &str) -> Result<()> {
 }
 
 #[cfg(windows)]
-pub fn initial_window_bounds() -> Option<gpui::Bounds<gpui::Pixels>> {
+pub fn initial_window_bounds() -> Option<gpui_kit::Bounds<gpui_kit::Pixels>> {
     #[repr(C)]
     #[derive(Default)]
     struct Rect {
@@ -195,15 +195,15 @@ pub fn initial_window_bounds() -> Option<gpui::Bounds<gpui::Pixels>> {
     let scale = (unsafe { GetDpiForSystem() } as f32 / 96.).max(1.);
     let width = (area.right - area.left) as f32 / scale;
     let height = (area.bottom - area.top) as f32 / scale;
-    let size = gpui::size(
-        gpui::px(1280f32.min(width - 32.)),
-        gpui::px(800f32.min(height - 64.)),
+    let size = gpui_kit::size(
+        gpui_kit::px(1280f32.min(width - 32.)),
+        gpui_kit::px(800f32.min(height - 64.)),
     );
-    let origin = gpui::point(
-        gpui::px(area.left as f32 / scale + (width - f32::from(size.width)) / 2.),
-        gpui::px(area.top as f32 / scale + (height - f32::from(size.height) - 32.) / 2.),
+    let origin = gpui_kit::point(
+        gpui_kit::px(area.left as f32 / scale + (width - f32::from(size.width)) / 2.),
+        gpui_kit::px(area.top as f32 / scale + (height - f32::from(size.height) - 32.) / 2.),
     );
-    Some(gpui::Bounds::new(origin, size))
+    Some(gpui_kit::Bounds::new(origin, size))
 }
 impl PlatformServices for DesktopPlatform {
     fn read_secret(&self, key: String) -> Result<Option<String>> {

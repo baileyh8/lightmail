@@ -1,6 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
-use gpui::{prelude::*, *};
-use gpui_component::{Root, Theme, ThemeMode};
+use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::{prelude::*, *};
 #[cfg(feature = "acceptance")]
 mod acceptance;
 mod app;
@@ -8,6 +8,7 @@ mod assets;
 mod events;
 mod instance;
 mod platform;
+mod reader;
 mod shortcuts;
 mod views;
 fn main() {
@@ -72,18 +73,24 @@ fn main() {
     if demo {
         engine.seed_demo().expect("Prepare synthetic demo");
     }
-    Application::new()
+    gpui_kit::application()
         .with_assets(assets::Assets)
         .run(move |cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             shortcuts::bind(cx);
             Theme::change(ThemeMode::Light, None, cx);
-            Theme::global_mut(cx).colors.primary = rgb(0x226451).into();
-            Theme::global_mut(cx).font_size = px(13.);
-            #[cfg(windows)]
-            {
-                Theme::global_mut(cx).font_family = "Microsoft YaHei UI".into();
-            }
+            // Kit's update path keeps component and base theme tokens in sync.
+            Theme::update(cx, |theme| {
+                let accent: Hsla = rgb(0x226451).into();
+                theme.colors.primary = accent;
+                theme.colors.button_primary = accent;
+                theme.colors.ring = accent;
+                theme.font_size = px(13.);
+                #[cfg(windows)]
+                {
+                    theme.font_family = "Microsoft YaHei UI".into();
+                }
+            });
             // Keep the complete window visible on smaller Windows desktops and at
             // larger display scaling factors. Dimensions here are logical pixels.
             let screen = cx
@@ -97,7 +104,7 @@ fn main() {
             let bounds = Bounds::centered(None, initial_size, cx);
             #[cfg(windows)]
             let bounds = platform::initial_window_bounds().unwrap_or(bounds);
-            cx.open_window(
+            gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(
@@ -106,6 +113,7 @@ fn main() {
                     )),
                     ..Default::default()
                 },
+                cx,
                 |window, cx| {
                     window.set_window_title("轻邮 Lightmail");
                     #[cfg(feature = "acceptance")]
@@ -119,12 +127,12 @@ fn main() {
                             acceptance::start(view.clone(), window, path, cx);
                         }
                     }
-                    cx.new(|cx| Root::new(view, window, cx))
+                    view
                 },
             )
             .expect("Open Lightmail window");
             cx.activate(true);
-            cx.on_window_closed(|cx| {
+            cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
                 }

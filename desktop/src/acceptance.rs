@@ -2,8 +2,9 @@
 use crate::{
     app::{MailDesktop, Page},
     platform::DesktopPlatform,
+    reader::Document,
 };
-use gpui::*;
+use gpui_kit::*;
 use lightmail_core::{ExportMode, PlatformServices};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -63,7 +64,9 @@ fn click(
                     lparam: isize,
                 ) -> i32;
             }
-            let RawWindowHandle::Win32(raw) = HasWindowHandle::window_handle(window)?.as_raw()
+            let RawWindowHandle::Win32(raw) = HasWindowHandle::window_handle(window)
+                .map_err(|e| anyhow::anyhow!("Window handle unavailable: {e:?}"))?
+                .as_raw()
             else {
                 anyhow::bail!("Not a Windows window")
             };
@@ -89,30 +92,23 @@ fn click(
         Ok(())
     })?
 }
-async fn dom(
-    view: &Entity<MailDesktop>,
-    handle: AnyWindowHandle,
-    script: &str,
-    cx: &mut AsyncApp,
-) -> anyhow::Result<serde_json::Value> {
-    let (tx, rx) = async_channel::bounded(1);
-    let script = script.to_string();
-    handle.update(cx, |_, _, cx| {
-        let reader = view
-            .read(cx)
-            .reader
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No native reader"))?;
-        reader
-            .read(cx)
-            .raw()
-            .evaluate_script_with_callback(&script, move |v| {
-                let _ = tx.try_send(v);
-            })?;
-        Ok::<_, anyhow::Error>(())
-    })??;
-    let result = rx.recv().await?;
-    Ok(serde_json::from_str(&result)?)
+// The native reader has no script engine or DOM: checks read the prepared
+// document and the exact image and link policy the view renders with.
+fn document_text(view: &Entity<MailDesktop>, cx: &App) -> Option<String> {
+    Some(match view.read(cx).reader.as_ref()? {
+        Document::Markdown(text) | Document::Html(text) => text.to_string(),
+        Document::Bilingual(pairs) => pairs
+            .iter()
+            .map(|(source, target)| format!("{source} {target}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+    })
+}
+fn blocks_remote_images(images: &crate::reader::Images) -> bool {
+    matches!(
+        images(&SharedUri::from("https://example.invalid/pixel.png")),
+        ImageSource::Resource(Resource::Embedded(path)) if path.as_ref() == crate::reader::PLACEHOLDER
+    )
 }
 pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: &mut App) {
     let handle = window.window_handle();
@@ -125,13 +121,12 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
                 pause(cx).await;
                 if handle.update(cx,|_,_,cx| view.read(cx).reader.is_some() || view.read(cx).reader_error.is_some())? { break; }
             }
-            // Native WebView creation and navigation complete independently.
-            for _ in 0..8 { pause(cx).await; }
+            for _ in 0..4 { pause(cx).await; }
             handle.update(cx,|_,_,cx|{let s=view.read(cx);anyhow::ensure!(s.body.is_some()&&!s.loading&&s.reader_error.is_none(),"Reader did not finish");Ok::<_,anyhow::Error>(())})??;
-            let document=dom(&view,handle,"JSON.stringify({text:document.body.innerText,links:document.links.length,csp:document.querySelector('meta[http-equiv]').content})",cx).await?;
-            let document:serde_json::Value=serde_json::from_str(document.as_str().ok_or_else(||anyhow::anyhow!("Reader JSON"))?)?;
-            anyhow::ensure!(document["text"].as_str().is_some_and(|s|s.contains("final review")),"Body text absent");
-            anyhow::ensure!(document["csp"].as_str().is_some_and(|s|s.contains("img-src 'none'")),"Remote images not blocked");
+            let document=handle.update(cx,|_,_,cx|document_text(&view,cx))?.ok_or_else(||anyhow::anyhow!("Reader document absent"))?;
+            anyhow::ensure!(document.contains("final review"),"Body text absent");
+            handle.update(cx,|_,_,cx|{anyhow::ensure!(!view.read(cx).images&&blocks_remote_images(&view.read(cx).image_policy()),"Remote images not blocked by default");Ok::<_,anyhow::Error>(())})??;
+            let document=serde_json::json!({"text":document});
             handle.update(cx,|_,window,cx| {
                 let b = view.read(cx).probes["reader-viewport"];
                 let geometry = serde_json::json!({"x":f32::from(b.left()),"y":f32::from(b.top()),"width":f32::from(b.size.width),"height":f32::from(b.size.height),"scale":window.scale_factor()});
@@ -143,12 +138,17 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{
                 let body=s.body.as_mut().unwrap();
                 body.html=format!("<table style='border:2px solid #226451'><tr><td><a href='https://example.com/synthetic-link'>Visible link</a></td></tr></table><img src='https://example.invalid/pixel.png'><script>document.body.dataset.executed='true'</script>{}",(0..80).map(|i|format!("<p>Scrollable synthetic paragraph {i}</p>")).collect::<String>());
-                s.reader_dirty=true;cx.notify();
+                s.plain_reading=false;s.reader_dirty=true;cx.notify();
             }))?;
             for _ in 0..8{pause(cx).await;}
-            let render=dom(&view,handle,"JSON.stringify({links:document.links.length,table:!!document.querySelector('table'),executed:document.body.dataset.executed||'',image:getComputedStyle(document.querySelector('img')).display,scroll:(window.scrollTo(0,document.body.scrollHeight),window.scrollY)})",cx).await?;
-            let render:serde_json::Value=serde_json::from_str(render.as_str().ok_or_else(||anyhow::anyhow!("Layout JSON"))?)?;
-            anyhow::ensure!(render["links"]==1&&render["table"]==true&&render["executed"]==""&&render["image"]=="none"&&render["scroll"].as_f64().is_some_and(|y|y>100.),"Reader layout, script policy or scrolling failed: {render}");
+            handle.update(cx,|_,_,cx|{
+                let s=view.read(cx);
+                let html=matches!(s.reader,Some(Document::Html(ref text)) if text.contains("<table")&&text.contains("Visible link"));
+                anyhow::ensure!(html,"Restricted HTML reader content missing");
+                anyhow::ensure!(blocks_remote_images(&s.image_policy()),"Remote image loaded without permission");
+                anyhow::ensure!(crate::reader::allowed_link("https://example.com/synthetic-link")&&!crate::reader::allowed_link("javascript:alert(1)"),"Link policy failed");
+                Ok::<_,anyhow::Error>(())
+            })??;
             click(&view,handle,"settings",true,cx)?;pause(cx).await;
             click(&view,handle,"settings-demo-work",true,cx)?;pause(cx).await;
             handle.update(cx,|_,_,cx|{anyhow::ensure!(view.read(cx).editing.as_ref().is_some_and(|a|a.id=="demo-work"),"Account whitespace click failed");Ok::<_,anyhow::Error>(())})??;
@@ -167,7 +167,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Same body is rendered repeatedly to exercise renderer reuse, not just conversion.
             for i in 0..60 {handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{s.page=Page::Mail;s.mode=ExportMode::Original;s.reader_dirty=true;s.record(&format!("reader-cycle-{i}"));cx.notify();}))?;pause(cx).await;}
             let platform=Arc::new(DesktopPlatform::default());let key=format!("acceptance:{}",uuid::Uuid::new_v4());platform.write_secret(key.clone(),"synthetic-only".into())?;anyhow::ensure!(platform.read_secret(key.clone())?.as_deref()==Some("synthetic-only"),"Vault roundtrip");platform.remove_secret(key)?;
-            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"checks":["native-window","mail-row-whitespace","reader-dom","reader-layout-links-scroll","remote-image-policy","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
+            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"checks":["native-window","mail-row-whitespace","reader-native-text","reader-html-links-images","remote-image-policy","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
         }.await;
         let report=match result{Ok(v)=>v,Err(e)=>serde_json::json!({"passed":false,"error":format!("{e:#}")})};
         let _=std::fs::create_dir_all(&path);let _=std::fs::write(path.join("native-acceptance.json"),report.to_string());

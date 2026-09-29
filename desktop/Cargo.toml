@@ -14,9 +14,8 @@ acceptance = []
 
 [dependencies]
 lightmail_core = { path = ".." }
-gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "windows-manifest", "runtime_shaders"] }
-gpui-component = { version = "=0.5.1", features = ["webview"] }
-wry = { package = "lb-wry", version = "0.53.3" }
+# All GPUI and component APIs come through the Kit facade, pinned as one set.
+gpui-kit = { version = "=0.7.0", default-features = false, features = ["component", "assets"] }
 anyhow = "1"
 async-channel = "2"
 futures-util = "0.3"
@@ -27,8 +26,8 @@ uuid = { version = "1", features = ["v4"] }
 url = "2"
 chrono = "0.4"
 rfd = "0.15"
+# Acceptance runs post input to the native window handle.
 raw-window-handle = "0.6"
-open = "5"
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["windows-native"] }

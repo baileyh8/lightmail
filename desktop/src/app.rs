@@ -2,14 +2,10 @@ use crate::{
     events::{Event, Events, TranslationProgress},
     platform::DesktopPlatform,
 };
-use gpui::{prelude::*, *};
-use gpui_component::{
-    input::{InputEvent, InputState},
-    webview::WebView,
-};
+use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
+use gpui_kit::{prelude::*, *};
 use lightmail_core::Result;
 use lightmail_core::*;
-use raw_window_handle::{HasWindowHandle, RawWindowHandle, WindowHandle};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -55,6 +51,8 @@ pub struct MailDesktop {
     pub errors: HashMap<String, String>,
     pub page: Page,
     pub fields: HashMap<&'static str, Entity<InputState>>,
+    /// Multi-line fields: Kit separates textareas from single-line inputs.
+    pub areas: HashMap<&'static str, Entity<TextareaState>>,
     pub editing: Option<Account>,
     pub provider: String,
     pub oauth: bool,
@@ -72,7 +70,7 @@ pub struct MailDesktop {
     pub attachments: Vec<String>,
     pub demo: bool,
     pub busy: bool,
-    pub reader: Option<Entity<WebView>>,
+    pub reader: Option<crate::reader::Document>,
     pub reader_dirty: bool,
     pub reader_error: Option<String>,
     pub storage: Option<StorageInfo>,
@@ -88,7 +86,6 @@ pub struct MailDesktop {
     body_task: Option<Task<()>>,
     translation_task: Option<Task<()>>,
     search_task: Option<Task<()>>,
-    reader_task: Option<Task<()>>,
     _events_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -108,11 +105,12 @@ impl MailDesktop {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus = cx.focus_handle();
-        window.focus(&focus);
+        window.focus(&focus, cx);
         let platform = Arc::new(DesktopPlatform::default());
         let (events, receiver) = Events::new();
         let service = MailApplication::new(engine.clone(), platform.clone(), events.clone());
         let mut fields = HashMap::new();
+        let mut areas = HashMap::new();
         for (key, prompt) in [
             ("search", "搜索已同步邮件"),
             ("name", "显示名称"),
@@ -136,12 +134,19 @@ impl MailDesktop {
             ("subject", "主题"),
             ("draft_body", "开始写邮件…"),
         ] {
+            if ["glossary", "draft_body"].contains(&key) {
+                let area = cx.new(|cx| {
+                    TextareaState::new(window, cx)
+                        .placeholder(prompt)
+                        .rows(if key == "draft_body" { 14 } else { 3 })
+                });
+                areas.insert(key, area);
+                continue;
+            }
             let input = cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(prompt)
                     .masked(["password", "client_secret", "api_key"].contains(&key))
-                    .multi_line(["glossary", "draft_body"].contains(&key))
-                    .rows(if key == "draft_body" { 14 } else { 3 })
             });
             fields.insert(key, input);
         }
@@ -160,13 +165,18 @@ impl MailDesktop {
             }
         });
         let mut subscriptions = vec![subscription];
-        for key in ["to", "cc", "bcc", "subject", "draft_body"] {
+        for key in ["to", "cc", "bcc", "subject"] {
             subscriptions.push(cx.subscribe(&fields[key], |s, _, event, cx| {
                 if matches!(event, InputEvent::Change) && s.page == Page::Compose {
                     s.persist_compose(cx);
                 }
             }));
         }
+        subscriptions.push(cx.subscribe(&areas["draft_body"], |s, _, event, cx| {
+            if matches!(event, InputEvent::Change) && s.page == Page::Compose {
+                s.persist_compose(cx);
+            }
+        }));
         let event_source = events.clone();
         let event_task = cx.spawn(async move |this, cx| {
             while receiver.recv().await.is_ok() {
@@ -180,7 +190,7 @@ impl MailDesktop {
             focus,
             data_root,
             focus_reading: false,
-            plain_reading: false,
+            plain_reading: true,
             adding_account: false,
             extra_recipients: false,
             probes: HashMap::new(),
@@ -206,6 +216,7 @@ impl MailDesktop {
             errors: HashMap::new(),
             page: Page::Mail,
             fields,
+            areas,
             editing: None,
             provider: "gmail".into(),
             oauth: true,
@@ -239,7 +250,6 @@ impl MailDesktop {
             body_task: None,
             translation_task: None,
             search_task: None,
-            reader_task: None,
             _events_task: event_task,
             _subscriptions: subscriptions,
         };
@@ -276,7 +286,10 @@ impl MailDesktop {
         }
     }
     pub fn value(&self, key: &'static str, cx: &App) -> String {
-        self.fields[key].read(cx).value().to_string()
+        match self.areas.get(key) {
+            Some(area) => area.read(cx).value().to_string(),
+            None => self.fields[key].read(cx).value().to_string(),
+        }
     }
     pub fn set(
         &self,
@@ -285,7 +298,11 @@ impl MailDesktop {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.fields[key].update(cx, |input, cx| input.set_value(value, window, cx));
+        let value: SharedString = value.into();
+        match self.areas.get(key) {
+            Some(area) => area.update(cx, |input, cx| input.set_value(value, window, cx)),
+            None => self.fields[key].update(cx, |input, cx| input.set_value(value, window, cx)),
+        }
     }
     pub fn record(&mut self, action: &str) {
         if let Some(path) = &self.acceptance {
@@ -794,8 +811,7 @@ impl MailDesktop {
                 if login && account.auth_kind == "oauth" {
                     let auth = GoogleLogin::new(account.clone(), client_id, platform.clone())?;
                     let url = auth.authorization_url();
-                    cx.update(|cx| cx.open_url(&url))
-                        .map_err(|_| fail("无法打开浏览器"))?;
+                    cx.update(|cx| cx.open_url(&url));
                     let secret = platform
                         .read_secret("google-client-secret".into())?
                         .unwrap_or_default();
@@ -1208,110 +1224,36 @@ impl MailDesktop {
         })
         .detach();
     }
-    pub fn update_reader(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.page != Page::Mail || self.body.is_none() {
-            if let Some(reader) = &self.reader {
-                reader.update(cx, |r, _| {
-                    if r.visible() {
-                        r.hide();
-                    }
-                });
-            }
-            return;
-        }
+    /// Image resolver for the current message. Remote images stay placeholders
+    /// until the user allows them for this message.
+    pub fn image_policy(&self) -> crate::reader::Images {
+        crate::reader::blocked_images()
+    }
+    /// Prepares reader content when the body, translation or mode changed. The
+    /// core validates translations and bounds Markdown work; rendering then
+    /// only clones shared strings.
+    pub fn update_reader(&mut self) {
         if !self.reader_dirty {
-            if let Some(reader) = &self.reader {
-                reader.update(cx, |r, _| {
-                    if !r.visible() {
-                        r.show();
-                    }
-                });
-            }
             return;
         }
-        let mut body = self.body.clone().unwrap();
-        if self.plain_reading {
-            body.html.clear();
-        }
-        let result = render_body_document(body, self.translation.clone(), self.mode, self.images);
-        match result {
-            Ok(html) => {
-                if let Some(reader) = &self.reader {
-                    reader.update(cx, |r, _| {
-                        r.show();
-                        if let Err(e) = r.raw().load_html(&html) {
-                            self.reader_error = Some(format!("正文显示失败：{e}"));
-                        }
-                    });
-                } else if self.reader_task.is_none() {
-                    // WebView2's synchronous builder pumps native messages. Calling it
-                    // inside GPUI render re-enters the borrowed window/application.
-                    // The async builder returns to the normal event loop instead.
-                    let native = match HasWindowHandle::window_handle(window) {
-                        Ok(handle) => ReaderHost(handle.as_raw()),
-                        Err(_) => {
-                            self.reader_error = Some("无法取得阅读窗口".into());
-                            return;
-                        }
-                    };
-                    let handle = gpui::Window::window_handle(window);
-                    self.record("reader-start");
-                    self.reader_task = Some(cx.spawn(async move |this, cx| {
-                    let webview = wry::WebViewBuilder::new()
-                        .with_incognito(true)
-                        .with_visible(false)
-                        .with_javascript_disabled()
-                        .with_html(&html)
-                        .with_navigation_handler(|url| {
-                            if url.starts_with("about:") || url.starts_with("data:text/html") {
-                                true
-                            } else {
-                                if let Ok(u) = url::Url::parse(&url) {
-                                    if ["http", "https", "mailto"].contains(&u.scheme()) {
-                                        let _ = open::that(url);
-                                    }
-                                }
-                                false
-                            }
-                        })
-                        .with_new_window_req_handler(|url, _| {
-                            if let Ok(u) = url::Url::parse(&url) {
-                                if ["http", "https", "mailto"].contains(&u.scheme()) {
-                                    let _ = open::that(url);
-                                }
-                            }
-                            wry::NewWindowResponse::Deny
-                        })
-                        .build_as_child_async(&native).await;
-                    let _ = handle.update(cx, |_, window, cx| this.update(cx, |s, cx| {
-                        match webview {
-                            Ok(view) => {
-                                s.reader = Some(cx.new(|cx| { let mut reader = WebView::new(view, window, cx); reader.hide(); reader }));
-                                s.reader_dirty = true;
-                            }
-                            Err(_) => s.reader_error = Some("无法启动系统网页阅读器。Windows 请安装 Microsoft Edge WebView2 Runtime。".into()),
-                        }
-                        s.reader_task = None;
-                        s.record("reader-created");
-                        cx.notify();
-                    }));
-                    }));
-                }
+        self.reader_dirty = false;
+        self.reader = None;
+        let Some(body) = &self.body else {
+            return;
+        };
+        match reader_content(
+            body,
+            self.translation.as_ref(),
+            self.mode,
+            !self.plain_reading,
+        ) {
+            Ok(content) => {
+                self.reader = Some(content.into());
+                self.reader_error = None;
             }
             Err(e) => self.reader_error = Some(e.to_string()),
         }
-        self.reader_dirty = false;
         self.record("reader-render");
-    }
-}
-// Used only on the main thread while the owning window/view remains alive.
-// Dropping MailDesktop cancels reader_task before its native parent is destroyed.
-struct ReaderHost(RawWindowHandle);
-impl HasWindowHandle for ReaderHost {
-    fn window_handle(
-        &self,
-    ) -> std::result::Result<WindowHandle<'_>, raw_window_handle::HandleError> {
-        Ok(unsafe { WindowHandle::borrow_raw(self.0) })
     }
 }
 pub fn date(timestamp: i64) -> String {

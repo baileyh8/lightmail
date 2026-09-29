@@ -1,0 +1,174 @@
+//! Native mail reader. Kit's TextView renders the Markdown or restricted HTML that
+//! the core prepared; there is no browser engine, so nothing in a message runs.
+//! Images stay placeholders unless allowed for the current message, and links
+//! leave the app only for http, https and mailto.
+use gpui_kit::{base::TextView, prelude::FluentBuilder as _, *};
+use lightmail_core::ReaderContent;
+use std::sync::Arc;
+
+const INK: u32 = 0x202724;
+const MUTED: u32 = 0x69736e;
+const ACCENT: u32 = 0x226451;
+const LINE: u32 = 0xe7ebe8;
+pub const PLACEHOLDER: &str = "icons/image-off.svg";
+// Short bodies lay out in full inside the pane's scroll area. Long ones use
+// TextView's virtualized viewport, so layout cost stays bounded.
+const VIRTUAL_BYTES: usize = 8 * 1024;
+
+/// Reader content with shared strings, so rendering never copies a body.
+pub enum Document {
+    Markdown(SharedString),
+    Html(SharedString),
+    Bilingual(Vec<(SharedString, SharedString)>),
+}
+
+impl From<ReaderContent> for Document {
+    fn from(content: ReaderContent) -> Self {
+        match content {
+            ReaderContent::Markdown(text) => Self::Markdown(text.into()),
+            ReaderContent::Html(text) => Self::Html(text.into()),
+            ReaderContent::Bilingual(pairs) => Self::Bilingual(
+                pairs
+                    .into_iter()
+                    .map(|(source, target)| (source.into(), target.into()))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+/// Resolves every document image, for painting and for size measurement.
+/// A message URI is never handed to GPUI's default loader.
+pub type Images = Arc<dyn Fn(&SharedUri) -> ImageSource + Send + Sync>;
+
+pub fn blocked_images() -> Images {
+    Arc::new(|_| ImageSource::from(PLACEHOLDER))
+}
+
+pub fn allowed_link(value: &str) -> bool {
+    !value.chars().any(char::is_control)
+        && url::Url::parse(value)
+            .is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "mailto"))
+}
+
+fn color(hex: u32) -> Hsla {
+    rgb(hex).into()
+}
+
+fn body(
+    id: SharedString,
+    source: SharedString,
+    html: bool,
+    images: Images,
+    fill: bool,
+) -> TextView {
+    let view = if html {
+        TextView::html(id, source)
+    } else {
+        TextView::markdown(id, source)
+    };
+    view.selectable(true)
+        .scrollable(fill)
+        .w_full()
+        .when(fill, |view| view.h_full())
+        .text_size(px(15.))
+        .line_height(relative(1.65))
+        .style(
+            gpui_kit::base::text::TextViewStyle::default()
+                .with_foreground(color(INK))
+                .with_link(color(ACCENT))
+                .with_muted_foreground(color(MUTED))
+                .with_border(color(LINE))
+                .with_paragraph_gap(rems(1.)),
+        )
+        .image_source(move |uri| images(uri))
+        .on_link_click(|link, _, _, cx| {
+            if allowed_link(link) {
+                // Parsing validates only; signed URLs are opened exactly as written.
+                cx.open_url(link.as_str());
+            }
+        })
+}
+
+/// `key` names the message and reading mode, so no text state leaks between them.
+pub fn view(key: &str, document: &Document, images: Images) -> AnyElement {
+    let scroll = || div().id("reader-scroll").size_full().overflow_y_scroll();
+    match document {
+        Document::Markdown(text) | Document::Html(text) => {
+            let html = matches!(document, Document::Html(_));
+            let fill = text.len() > VIRTUAL_BYTES;
+            let view = body(
+                format!("reader:{key}").into(),
+                text.clone(),
+                html,
+                images,
+                fill,
+            );
+            if fill {
+                div().size_full().child(view).into_any_element()
+            } else {
+                scroll().child(view).into_any_element()
+            }
+        }
+        Document::Bilingual(pairs) => {
+            let mut rows = div().flex().flex_col().gap_6().w_full().pb_6();
+            for (index, (source, target)) in pairs.iter().enumerate() {
+                rows = rows.child(
+                    div()
+                        .flex()
+                        .gap_6()
+                        .w_full()
+                        .child(div().flex_1().min_w_0().child(body(
+                            format!("reader:{key}:{index}:source").into(),
+                            source.clone(),
+                            false,
+                            images.clone(),
+                            false,
+                        )))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .pl_6()
+                                .border_l_1()
+                                .border_color(rgb(LINE))
+                                .child(body(
+                                    format!("reader:{key}:{index}:target").into(),
+                                    target.clone(),
+                                    false,
+                                    images.clone(),
+                                    false,
+                                )),
+                        ),
+                );
+            }
+            scroll().child(rows).into_any_element()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allowed_link;
+
+    #[test]
+    fn links_leave_the_app_only_for_web_and_mail() {
+        for link in [
+            "https://example.test/action?t=a%2Bb%3D",
+            "http://example.test/",
+            "mailto:reader@example.test",
+        ] {
+            assert!(allowed_link(link), "{link}");
+        }
+        for link in [
+            "file:///C:/private.txt",
+            "javascript:alert(1)",
+            "data:text/html,hello",
+            "ms-settings:privacy",
+            "https://example.test/\r\n",
+            "relative/path",
+        ] {
+            assert!(!allowed_link(link), "{link}");
+        }
+    }
+}
