@@ -56,11 +56,24 @@ fn main() {
             {
                 Theme::global_mut(cx).font_family = "Microsoft YaHei UI".into();
             }
-            let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+            // Keep the complete window visible on smaller Windows desktops and at
+            // larger display scaling factors. Dimensions here are logical pixels.
+            let screen = cx
+                .primary_display()
+                .map(|display| display.bounds().size)
+                .unwrap_or(size(px(1280.), px(800.)));
+            let initial_size = size(
+                px(1280.).min(screen.width - px(32.)),
+                px(800.).min(screen.height - px(80.)),
+            );
+            let bounds = Bounds::centered(None, initial_size, cx);
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(1040.), px(640.))),
+                    window_min_size: Some(size(
+                        px(1040.).min(initial_size.width),
+                        px(640.).min(initial_size.height),
+                    )),
                     ..Default::default()
                 },
                 |window, cx| {

@@ -77,6 +77,8 @@ fn probe_marker(name: String, cx: &Context<MailDesktop>) -> impl IntoElement {
         |_, _, _, _| {},
     )
     .absolute()
+    .top_0()
+    .left_0()
     .size_full()
 }
 fn probe(name: &str, element: impl IntoElement, cx: &Context<MailDesktop>) -> Div {
@@ -1477,6 +1479,7 @@ impl Render for MailDesktop {
                         .child(
                             div()
                                 .w(px(960.))
+                                .max_w_full()
                                 .h(px(700.))
                                 .max_h_full()
                                 .rounded(px(16.))

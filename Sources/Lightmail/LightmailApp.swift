@@ -19,6 +19,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
   @StateObject private var store = MailStore()
   init() {
     MemoryTests.startDiagnosticGuard()
+    if let i = CommandLine.arguments.firstIndex(of: "--cached-reader-test"), CommandLine.arguments.count > i + 1 {
+      ReaderRenderingTests.runCached(directory: CommandLine.arguments[i + 1])
+      exit(0)
+    }
     if let i = CommandLine.arguments.firstIndex(of: "--render-test"), CommandLine.arguments.count > i + 1 {
       ReaderRenderingTests.run(directory: CommandLine.arguments[i + 1])
       exit(0)

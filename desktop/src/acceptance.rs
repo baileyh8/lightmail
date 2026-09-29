@@ -35,6 +35,11 @@ fn click(
         } else {
             bounds.center()
         };
+        if let Some(path) = &view.read(cx).acceptance {
+            let trace = serde_json::json!({"target": name, "bounds": {"x": f32::from(bounds.left()), "y": f32::from(bounds.top()), "width": f32::from(bounds.size.width), "height": f32::from(bounds.size.height)}, "click": {"x": f32::from(position.x), "y": f32::from(position.y)}, "scale": window.scale_factor()});
+            let _ = std::fs::create_dir_all(path);
+            let _ = std::fs::write(path.join("last-click.json"), trace.to_string());
+        }
         #[cfg(windows)]
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
