@@ -12,6 +12,7 @@ mod platform;
 mod reader;
 mod shortcuts;
 mod views;
+mod window_chrome;
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--version") {
@@ -112,11 +113,18 @@ fn main() {
                         px(1040.).min(bounds.size.width),
                         px(640.).min(bounds.size.height),
                     )),
+                    // On Windows the view draws its own title area; see window_chrome.
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("轻邮 Lightmail".into()),
+                        appears_transparent: cfg!(windows),
+                        traffic_light_position: None,
+                    }),
                     ..Default::default()
                 },
                 cx,
                 |window, cx| {
                     window.set_window_title("轻邮 Lightmail");
+                    window_chrome::hide_border(window);
                     #[cfg(feature = "acceptance")]
                     let acceptance_path = acceptance.clone();
                     let view = cx.new(|cx| {

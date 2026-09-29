@@ -292,8 +292,12 @@ impl MailDesktop {
             .gap_3()
             .child(
                 row()
+                    .id("brand-drag")
+                    .window_control_area(WindowControlArea::Drag)
+                    .relative()
                     .h(px(70.))
                     .px_3()
+                    .child(probe_marker("brand-drag".into(), cx))
                     .child(icon("plane").size(px(25.)).text_color(rgb(ACCENT)))
                     .child(
                         div()
@@ -611,11 +615,17 @@ impl MailDesktop {
                         row()
                             .child(
                                 div()
+                                    .id("list-title-drag")
+                                    .window_control_area(WindowControlArea::Drag)
+                                    .relative()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_size(px(21.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(self.title.clone()),
+                                    .child(self.title.clone())
+                                    .child(probe_marker("list-title-drag".into(), cx)),
                             )
-                            .child(div().flex_1())
                             .child(
                                 Button::new("refresh")
                                     .icon(icon("refresh"))
@@ -797,6 +807,7 @@ impl MailDesktop {
                 .h(px(64.))
                 .flex_shrink_0()
                 .px_5()
+                .pr(px(crate::window_chrome::RESERVE.max(20.)))
                 .when(self.focus_reading, |bar| {
                     bar.child(Button::new("back-list").label("返回列表").ghost().on_click(
                         cx.listener(|s, _, _, cx| {
@@ -824,7 +835,15 @@ impl MailDesktop {
                         .on_click(cx.listener(|s, _, _, cx| s.move_selected("trash", cx))),
                 )
                 .child(more)
-                .child(div().flex_1())
+                .child(
+                    div()
+                        .id("reader-toolbar-drag")
+                        .window_control_area(WindowControlArea::Drag)
+                        .relative()
+                        .flex_1()
+                        .h_full()
+                        .child(probe_marker("reader-toolbar-drag".into(), cx)),
+                )
                 .child(
                     Button::new("translate")
                         .icon(icon("language"))
@@ -1474,13 +1493,38 @@ impl MailDesktop {
                 ),
         )
     }
+    fn window_chrome(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        let mut chrome = div()
+            .flex()
+            .absolute()
+            .top_0()
+            .right_0()
+            .h(px(crate::window_chrome::HEIGHT))
+            // Header drag areas painted earlier must never claim the controls.
+            .occlude();
+        for (name, control) in crate::window_chrome::controls(window, cx) {
+            chrome = chrome.child(probe(name, control, cx));
+        }
+        chrome
+    }
     fn welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
         column()
+            .relative()
             .flex_1()
             .h_full()
             .items_center()
             .justify_center()
             .gap_5()
+            .child(
+                div()
+                    .id("welcome-drag")
+                    .window_control_area(WindowControlArea::Drag)
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right(px(crate::window_chrome::WIDTH))
+                    .h(px(64.)),
+            )
             .child(icon("plane").size(px(48.)).text_color(rgb(ACCENT)))
             .child(
                 div()
@@ -1745,10 +1789,15 @@ impl Render for MailDesktop {
                     .child(column().flex_1().h_full().child(content)),
             )
             .when(settings || composing, |root| {
+                // The dimmed margin moves the window and keeps the dialog clear of the
+                // controls; the dialog occludes it, so its own clicks stay clicks.
                 root.child(
                     div()
+                        .id("overlay-drag")
+                        .window_control_area(WindowControlArea::Drag)
                         .absolute()
                         .inset_0()
+                        .p(px(crate::window_chrome::HEIGHT))
                         .bg(rgba(0x20272433))
                         .occlude()
                         .flex()
@@ -1760,6 +1809,8 @@ impl Render for MailDesktop {
                                 .max_w_full()
                                 .h(px(if composing { 670. } else { 700. }))
                                 .max_h_full()
+                                .relative()
+                                .occlude()
                                 .rounded(px(16.))
                                 .overflow_hidden()
                                 .bg(rgb(0xffffff))
@@ -1770,7 +1821,8 @@ impl Render for MailDesktop {
                                     self.compose_panel(cx).into_any_element()
                                 } else {
                                     self.settings_panel(cx).into_any_element()
-                                }),
+                                })
+                                .child(probe_marker("overlay-panel".into(), cx)),
                         ),
                 )
             })
@@ -1780,6 +1832,8 @@ impl Render for MailDesktop {
                         .absolute()
                         .bottom(px(16.))
                         .right(px(16.))
+                        // Above the dimmed margin, the note keeps its own clicks.
+                        .occlude()
                         .max_w(px(600.))
                         .rounded_md()
                         .bg(rgb(SELECTED))
@@ -1801,5 +1855,7 @@ impl Render for MailDesktop {
                         ),
                 )
             })
+            // Last, so the controls stay above dialogs and notes.
+            .child(self.window_chrome(window, cx))
     }
 }
