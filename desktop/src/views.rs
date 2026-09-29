@@ -1399,12 +1399,26 @@ impl MailDesktop {
                     .child(form),
             );
         } else if self.page == Page::Storage {
-            let info = self.storage.as_ref();
+            // Figures arrive from a background read; never show zeros meanwhile.
+            let (counts, sizes) = match self.storage.as_ref() {
+                Some(i) => (
+                    format!(
+                        "已同步 {} 封摘要 · 已缓存 {} 封正文",
+                        i.message_count, i.body_count
+                    ),
+                    format!(
+                        "数据库 {:.1} MiB · 正文缓存 {:.1} MiB",
+                        i.database_bytes as f64 / 1048576.,
+                        i.cache_bytes as f64 / 1048576.
+                    ),
+                ),
+                None => ("正在读取存储信息…".into(), String::new()),
+            };
             root=root.child(column().p_7().gap_5().child(title("本地存储"))
-                .child(muted(format!("已同步 {} 封摘要 · 已缓存 {} 封正文",info.map(|i|i.message_count).unwrap_or(0),info.map(|i|i.body_count).unwrap_or(0))))
-                .child(muted(format!("数据库 {:.1} MiB · 正文缓存 {:.1} MiB",info.map(|i|i.database_bytes).unwrap_or(0)as f64/1048576.,info.map(|i|i.cache_bytes).unwrap_or(0)as f64/1048576.)))
+                .child(muted(counts))
+                .child(muted(sizes))
                 .child(muted("每个邮箱预加载最新 20 封。新邮件到达后释放更早的正文，保留摘要；旧正文和附件按需读取。"))
-                .child(row().child(Button::new("clear-cache").label("清理正文缓存").on_click(cx.listener(|s,_,_,cx|s.clear_cache(cx)))).child(Button::new("import-mail").label("导入 .eml 邮件").on_click(cx.listener(|s,_,_,cx|s.import_mail(cx)))))
+                .child(row().child(Button::new("clear-cache").label("清理正文缓存").disabled(self.busy).on_click(cx.listener(|s,_,_,cx|s.clear_cache(cx)))).child(Button::new("import-mail").label("导入 .eml 邮件").on_click(cx.listener(|s,_,_,cx|s.import_mail(cx)))))
                 .child(muted("账号授权码和 API Key 保存在 Windows 凭据管理器。卸载应用时保留邮件数据，避免误删。")));
         } else {
             let mut profiles = column()

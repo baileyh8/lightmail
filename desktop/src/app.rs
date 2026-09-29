@@ -13,6 +13,45 @@ use std::{
     time::Duration,
 };
 
+/// Everything the lists show, read together off the UI thread.
+struct Lists {
+    accounts: Vec<Account>,
+    folders: Vec<Folder>,
+    drafts: Vec<Draft>,
+    messages: Vec<MessageSummary>,
+    /// The cached body of the message that was selected when the read began.
+    body: Option<MailBody>,
+}
+fn read_lists(engine: &MailEngine, query: MessageQuery, selected: Option<String>) -> Result<Lists> {
+    Ok(Lists {
+        accounts: engine.accounts()?,
+        folders: engine.folders(String::new())?,
+        drafts: engine.drafts()?,
+        messages: engine.list_messages(query)?,
+        body: match selected {
+            Some(id) => engine.cached_body(id)?,
+            None => None,
+        },
+    })
+}
+fn same_view(a: &MessageQuery, b: &MessageQuery) -> bool {
+    (
+        &a.account_id,
+        &a.folder_id,
+        &a.scope,
+        &a.search,
+        a.unread_only,
+        a.offset,
+    ) == (
+        &b.account_id,
+        &b.folder_id,
+        &b.scope,
+        &b.search,
+        b.unread_only,
+        b.offset,
+    )
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Page {
     Mail,
@@ -87,6 +126,8 @@ pub struct MailDesktop {
     body_task: Option<Task<()>>,
     translation_task: Option<Task<()>>,
     search_task: Option<Task<()>>,
+    lists_task: Option<Task<()>>,
+    lists_generation: u64,
     autosave_task: Option<Task<()>>,
     _events_task: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -257,11 +298,16 @@ impl MailDesktop {
             body_task: None,
             translation_task: None,
             search_task: None,
+            lists_task: None,
+            lists_generation: 0,
             autosave_task: None,
             _events_task: event_task,
             _subscriptions: subscriptions,
         };
-        app.reload();
+        // The first read happens before the window shows, so a configured
+        // mailbox never flashes the welcome page.
+        let first = read_lists(&app.engine, app.query(0), None);
+        app.apply_lists(first, true);
         app.load_translation_config(window, cx);
         if !demo {
             if let Err(e) = app.service.clone().start() {
@@ -320,50 +366,77 @@ impl MailDesktop {
             let _ = std::fs::write(path.join("ui-state.json"), report.to_string());
         }
     }
-    pub fn reload(&mut self) {
-        let result = (|| -> Result<()> {
-            self.accounts = self.engine.accounts()?;
-            self.folders = self.engine.folders(String::new())?;
-            self.drafts = self.engine.drafts()?;
-            self.messages = self.engine.list_messages(MessageQuery {
-                account_id: self.account_id.clone(),
-                folder_id: self.folder_id.clone(),
-                scope: self.scope.clone(),
-                search: self.search_text.clone(),
-                unread_only: self.unread_only,
-                limit: 100,
-                offset: self.page_offset,
-            })?;
-            if let Some(selected) = &self.selected {
-                if let Some(updated) = self.messages.iter().find(|m| m.id == selected.id) {
-                    self.selected = Some(updated.clone());
-                }
-            }
-            Ok(())
-        })();
-        if let Err(e) = result {
-            self.status = e.to_string();
-        }
-    }
-    pub fn reload_search(&mut self, cx: &App) {
-        let search = self.value("search", cx);
-        if search != self.search_text {
-            self.page_offset = 0;
-            self.search_text = search;
-        }
-        let query = MessageQuery {
+    fn query(&self, offset: u32) -> MessageQuery {
+        MessageQuery {
             account_id: self.account_id.clone(),
             folder_id: self.folder_id.clone(),
             scope: self.scope.clone(),
             search: self.search_text.clone(),
             unread_only: self.unread_only,
             limit: 100,
-            offset: self.page_offset,
-        };
-        match self.engine.list_messages(query) {
-            Ok(rows) => self.messages = rows,
-            Err(e) => self.status = e.to_string(),
+            offset,
         }
+    }
+    /// Reads the lists off the UI thread, where a sync holding the engine's
+    /// connection would stall input. Only the newest read lands, so a scope or
+    /// page the user already left never replaces the current one, and a body
+    /// read for an earlier selection is dropped.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.lists_generation += 1;
+        let generation = self.lists_generation;
+        let selection = self.generation;
+        let engine = self.engine.clone();
+        let query = self.query(self.page_offset);
+        let selected = self.selected.as_ref().map(|m| m.id.clone());
+        self.lists_task = Some(cx.spawn(async move |this, cx| {
+            let lists = cx
+                .background_spawn(async move { read_lists(&engine, query, selected) })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                if s.lists_generation == generation {
+                    s.apply_lists(lists, s.generation == selection);
+                    cx.notify();
+                }
+            });
+        }));
+    }
+    fn apply_lists(&mut self, lists: Result<Lists>, same_selection: bool) {
+        let lists = match lists {
+            Ok(lists) => lists,
+            Err(e) => {
+                self.status = e.to_string();
+                return;
+            }
+        };
+        self.accounts = lists.accounts;
+        self.folders = lists.folders;
+        self.drafts = lists.drafts;
+        self.messages = lists.messages;
+        let Some(selected) = &self.selected else {
+            return;
+        };
+        if let Some(updated) = self.messages.iter().find(|m| m.id == selected.id) {
+            self.selected = Some(updated.clone());
+        }
+        if let Some(body) = lists.body.filter(|_| same_selection) {
+            if self
+                .body
+                .as_ref()
+                .is_none_or(|old| old.content_hash != body.content_hash || old.html != body.html)
+            {
+                self.body = Some(body);
+                self.reader_dirty = true;
+            }
+        }
+    }
+    /// Takes the search box text, then reloads.
+    pub fn reload_search(&mut self, cx: &mut Context<Self>) {
+        let search = self.value("search", cx);
+        if search != self.search_text {
+            self.page_offset = 0;
+            self.search_text = search;
+        }
+        self.reload(cx);
     }
     fn consume(&mut self, updates: Vec<Event>, cx: &mut Context<Self>) {
         let mut reload = false;
@@ -401,18 +474,7 @@ impl MailDesktop {
             }
         }
         if reload {
-            self.reload();
             self.reload_search(cx);
-            if let Some(m) = &self.selected {
-                if let Ok(Some(body)) = self.engine.cached_body(m.id.clone()) {
-                    if self.body.as_ref().is_none_or(|old| {
-                        old.content_hash != body.content_hash || old.html != body.html
-                    }) {
-                        self.body = Some(body);
-                        self.reader_dirty = true;
-                    }
-                }
-            }
         }
         self.record("core-update");
         cx.notify();
@@ -444,7 +506,7 @@ impl MailDesktop {
         self.page = Page::Mail;
         self.unread_only = false;
         self.set("search", "", window, cx);
-        self.reload();
+        self.reload(cx);
         self.record("scope");
         cx.notify();
     }
@@ -456,7 +518,6 @@ impl MailDesktop {
                 if let Err(e) = result {
                     s.status = e.to_string();
                 }
-                s.reload();
                 s.reload_search(cx);
                 s.record("refresh");
                 cx.notify();
@@ -468,6 +529,10 @@ impl MailDesktop {
         let Some(message) = self.messages.iter().find(|m| m.id == id).cloned() else {
             return;
         };
+        self.open(message, cx);
+    }
+    fn open(&mut self, message: MessageSummary, cx: &mut Context<Self>) {
+        let id = message.id.clone();
         self.cancel_translation();
         self.selected = Some(message.clone());
         self.body = None;
@@ -504,7 +569,6 @@ impl MailDesktop {
                     }
                     Err(e) => s.reader_error = Some(e.to_string()),
                 }
-                s.reload();
                 s.reload_search(cx);
                 s.record("body-loaded");
                 cx.notify();
@@ -527,7 +591,7 @@ impl MailDesktop {
                 if let Err(e) = result {
                     s.status = e.to_string();
                 }
-                s.reload();
+                s.reload(cx);
                 cx.notify();
             });
         })
@@ -550,7 +614,7 @@ impl MailDesktop {
                     }
                     Err(e) => s.status = e.to_string(),
                 }
-                s.reload();
+                s.reload(cx);
                 cx.notify();
             });
         })
@@ -560,55 +624,51 @@ impl MailDesktop {
         if self.busy {
             return;
         }
-        let query = MessageQuery {
-            account_id: self.account_id.clone(),
-            folder_id: self.folder_id.clone(),
-            scope: self.scope.clone(),
-            search: self.search_text.clone(),
-            unread_only: self.unread_only,
-            limit: 100,
-            offset: self.page_offset + 100,
-        };
-        if let Ok(rows) = self.engine.list_messages(query.clone()) {
-            if !rows.is_empty() {
-                self.page_offset += 100;
-                self.messages = rows;
-                cx.notify();
-                return;
-            }
-        }
-        let service = self.service.clone();
-        self.status = "正在读取更早的摘要…".into();
         self.busy = true;
-        let scope = (
-            self.account_id.clone(),
-            self.folder_id.clone(),
-            self.scope.clone(),
-            self.search_text.clone(),
-        );
+        let view = self.query(self.page_offset);
+        let next = self.query(self.page_offset + 100);
+        let engine = self.engine.clone();
+        let service = self.service.clone();
         cx.spawn(async move |this, cx| {
-            let error = service
-                .load_older(scope.0.clone(), scope.1.clone(), scope.2.clone())
+            let rows = |engine: Arc<MailEngine>, next: MessageQuery| async move {
+                engine.list_messages(next).map(|rows| !rows.is_empty())
+            };
+            let local = cx
+                .background_spawn(rows(engine.clone(), next.clone()))
                 .await
-                .err()
-                .map(|e| e.to_string());
+                .unwrap_or(false);
+            let mut error = None;
+            if !local {
+                let _ = this.update(cx, |s, cx| {
+                    s.status = "正在读取更早的摘要…".into();
+                    cx.notify();
+                });
+                error = service
+                    .load_older(
+                        next.account_id.clone(),
+                        next.folder_id.clone(),
+                        next.scope.clone(),
+                    )
+                    .await
+                    .err()
+                    .map(|e| e.to_string());
+            }
+            let more = local
+                || cx
+                    .background_spawn(rows(engine, next))
+                    .await
+                    .unwrap_or(false);
             let _ = this.update(cx, |s, cx| {
                 s.busy = false;
-                s.status = error.unwrap_or("已读取可用的摘要".into());
-                if scope
-                    == (
-                        s.account_id.clone(),
-                        s.folder_id.clone(),
-                        s.scope.clone(),
-                        s.search_text.clone(),
-                    )
-                {
-                    if let Ok(rows) = s.engine.list_messages(query) {
-                        if !rows.is_empty() {
-                            s.page_offset += 100;
-                        }
+                if !local {
+                    s.status = error.unwrap_or("已读取可用的摘要".into());
+                }
+                // The user may have moved on while this ran.
+                if same_view(&view, &s.query(s.page_offset)) {
+                    if more {
+                        s.page_offset += 100;
                     }
-                    s.reload();
+                    s.reload(cx);
                 }
                 cx.notify();
             });
@@ -617,7 +677,7 @@ impl MailDesktop {
     }
     pub fn previous_page(&mut self, cx: &mut Context<Self>) {
         self.page_offset = self.page_offset.saturating_sub(100);
-        self.reload();
+        self.reload(cx);
         cx.notify();
     }
     /// Saves the draft shortly after typing pauses, not on every keystroke.
@@ -646,18 +706,47 @@ impl MailDesktop {
     }
     pub fn open_storage(&mut self, cx: &mut Context<Self>) {
         self.persist_compose(cx);
-        self.storage = self.engine.storage_info().ok();
         self.page = Page::Storage;
+        let engine = self.engine.clone();
+        cx.spawn(async move |this, cx| {
+            let info = cx
+                .background_spawn(async move { engine.storage_info() })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.storage = info.ok();
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
     pub fn clear_cache(&mut self, cx: &mut Context<Self>) {
-        match self.engine.clear_body_cache() {
-            Ok(()) => {
-                self.storage = self.engine.storage_info().ok();
-                self.status = "正文缓存已清理；摘要、本地导入邮件和草稿保留".into();
-            }
-            Err(e) => self.status = e.to_string(),
+        if self.busy {
+            return;
         }
+        self.busy = true;
+        self.status = "正在清理正文缓存…".into();
+        let engine = self.engine.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    engine.clear_body_cache()?;
+                    engine.storage_info()
+                })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.busy = false;
+                match result {
+                    Ok(info) => {
+                        s.storage = Some(info);
+                        s.status = "正文缓存已清理；摘要、本地导入邮件和草稿保留".into();
+                    }
+                    Err(e) => s.status = e.to_string(),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
     pub fn import_mail(&mut self, cx: &mut Context<Self>) {
@@ -682,14 +771,14 @@ impl MailDesktop {
             .import_eml(path.to_string_lossy().into(), account.id.clone())
         {
             Ok(message) => {
-                self.account_id = message.account_id;
-                self.folder_id = message.folder_id;
+                self.account_id = message.account_id.clone();
+                self.folder_id = message.folder_id.clone();
                 self.scope = "inbox".into();
                 self.title = "本地导入".into();
                 self.page = Page::Mail;
                 self.page_offset = 0;
-                self.reload();
-                self.select(message.id, cx);
+                self.open(message, cx);
+                self.reload(cx);
             }
             Err(e) => self.status = e.to_string(),
         }
@@ -703,7 +792,7 @@ impl MailDesktop {
                 s.status = result
                     .map(|_| "邮件已提交".into())
                     .unwrap_or_else(|e| e.to_string());
-                s.reload();
+                s.reload(cx);
                 cx.notify();
             });
         })
@@ -861,7 +950,7 @@ impl MailDesktop {
                         s.search_text.clear();
                         s.clear_secrets = true;
                         s.status = "邮箱已连接，正在同步".into();
-                        s.reload();
+                        s.reload(cx);
                     }
                     Err(e) => s.status = e.to_string(),
                 }
@@ -893,7 +982,7 @@ impl MailDesktop {
                         s.selected = None;
                         s.body = None;
                         s.status = "已从此设备移除邮箱".into();
-                        s.reload();
+                        s.reload(cx);
                     }
                     Err(e) => s.status = e.to_string(),
                 }
@@ -965,7 +1054,7 @@ impl MailDesktop {
                     self.draft = Some(d);
                     self.status = "草稿已保存".into();
                     self.page = Page::Mail;
-                    self.reload();
+                    self.reload(cx);
                     self.record("draft-save");
                 }
                 Err(e) => self.status = e.to_string(),
@@ -985,7 +1074,7 @@ impl MailDesktop {
                         s.scope = "outbox".into();
                         s.title = "待发送".into();
                         s.status = "5 秒后发送，可在待发送中撤销".into();
-                        s.reload();
+                        s.reload(cx);
                     }
                     Err(e) => s.status = e.to_string(),
                 }
@@ -1004,7 +1093,7 @@ impl MailDesktop {
                 } else {
                     "已退回草稿，可核对后重新发送".into()
                 };
-                self.reload();
+                self.reload(cx);
             }
             Err(e) => self.status = e.to_string(),
         }
@@ -1014,7 +1103,7 @@ impl MailDesktop {
         match self.engine.delete_draft(id) {
             Ok(()) => {
                 self.status = "草稿已删除".into();
-                self.reload();
+                self.reload(cx);
             }
             Err(e) => self.status = e.to_string(),
         }
@@ -1024,7 +1113,7 @@ impl MailDesktop {
         match self.service.cancel_queued(id) {
             Ok(()) => {
                 self.status = "已撤销发送，保留在草稿".into();
-                self.reload();
+                self.reload(cx);
             }
             Err(e) => self.status = e.to_string(),
         }
@@ -1314,4 +1403,96 @@ pub fn date(timestamp: i64) -> String {
                 .to_string()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    // No glob import: with Kit's test support it would shadow `#[test]`.
+    use super::MailDesktop;
+    use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, WindowOptions};
+    use lightmail_core::MailEngine;
+
+    fn open(cx: &mut TestAppContext) -> (tempfile::TempDir, AnyWindowHandle, Entity<MailDesktop>) {
+        let root = tempfile::tempdir().unwrap();
+        let engine =
+            MailEngine::new(root.path().join("Preview").to_string_lossy().into_owned()).unwrap();
+        engine.seed_demo().unwrap();
+        cx.update(gpui_kit::init);
+        let data = root.path().to_path_buf();
+        let (window, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| MailDesktop::new(engine, data, true, None, window, cx))
+            })
+            .unwrap()
+        });
+        (root, window, view)
+    }
+
+    #[gpui_kit::test]
+    fn a_configured_mailbox_is_listed_before_the_first_frame(cx: &mut TestAppContext) {
+        let (_root, _window, view) = open(cx);
+        // Nothing has run yet: the welcome page must not flash for existing accounts.
+        view.read_with(cx, |s, _| {
+            assert_eq!((s.accounts.len(), s.messages.len()), (4, 7));
+        });
+    }
+
+    // Several scheduler seeds, so both completion orders of the two reads occur.
+    #[gpui_kit::test(iterations = 16)]
+    fn a_read_for_a_view_the_user_left_never_lands(cx: &mut TestAppContext) {
+        let (_root, window, view) = open(cx);
+        cx.update_window(window, |_, window, cx| {
+            view.update(cx, |s, cx| {
+                // The demo's sent folders are empty; leave before that read lands.
+                s.change_scope(
+                    "已发送".into(),
+                    "".into(),
+                    "".into(),
+                    "sent".into(),
+                    window,
+                    cx,
+                );
+                s.change_scope(
+                    "收件箱".into(),
+                    "".into(),
+                    "".into(),
+                    "inbox".into(),
+                    window,
+                    cx,
+                );
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        view.read_with(cx, |s, _| {
+            assert_eq!((s.scope.as_str(), s.messages.len()), ("inbox", 7));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_body_read_for_an_earlier_selection_is_dropped(cx: &mut TestAppContext) {
+        let (_root, window, view) = open(cx);
+        cx.update_window(window, |_, _, cx| {
+            view.update(cx, |s, cx| {
+                let (first, second) = (s.messages[0].clone(), s.messages[1].clone());
+                // Every demo body is cached, so this read carries the first body.
+                s.selected = Some(first);
+                s.reload(cx);
+                // Selecting another message before it lands makes it stale.
+                s.selected = Some(second);
+                s.generation += 1;
+                s.body = None;
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+        view.read_with(cx, |s, _| assert!(s.body.is_none(), "stale body shown"));
+        cx.update_window(window, |_, _, cx| view.update(cx, |s, cx| s.reload(cx)))
+            .unwrap();
+        cx.run_until_parked();
+        view.read_with(cx, |s, _| {
+            let selected = s.selected.as_ref().map(|m| m.id.as_str());
+            assert_eq!(s.body.as_ref().map(|b| b.message_id.as_str()), selected);
+        });
+    }
 }

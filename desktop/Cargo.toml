@@ -36,3 +36,4 @@ winreg = "0.55"
 
 [dev-dependencies]
 tempfile = "3"
+gpui-kit = { version = "=0.7.0", default-features = false, features = ["component", "assets", "test-support"] }
