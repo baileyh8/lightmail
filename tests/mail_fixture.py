@@ -17,7 +17,9 @@ STATE = {"validity": 7, "seen": False, "body_fetches": 0, "attachment_fetches": 
 BODY = b"Hello Bailey,\r\n\r\nPlease review the attached file. Amount USD 12.50.\r\n\r\nThanks."
 ATTACHMENT = b"fixture attachment bytes"
 HEADER = b"From: Fixture Sender <sender@example.com>\r\nTo: recipient@example.com\r\nSubject: Synthetic integration mail\r\nMessage-ID: <fixture-1@example.com>\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n"
-STRUCTURE = f'(("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "8BIT" {len(BODY)} 6)("APPLICATION" "OCTET-STREAM" ("NAME" "sample.bin") NIL NIL "BASE64" {len(base64.b64encode(ATTACHMENT))} NIL ("ATTACHMENT" ("FILENAME" "sample.bin")) NIL NIL) "MIXED" ("BOUNDARY" "x") NIL NIL)'
+# QQ can represent an absent Content-Transfer-Encoding as NIL. Exercise it in
+# summary batches and selective body fetches, alongside a normal BASE64 part.
+STRUCTURE = f'(("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL NIL {len(BODY)} 6)("APPLICATION" "OCTET-STREAM" ("NAME" "sample.bin") NIL NIL "BASE64" {len(base64.b64encode(ATTACHMENT))} NIL ("ATTACHMENT" ("FILENAME" "sample.bin")) NIL NIL) "MIXED" ("BOUNDARY" "x") NIL NIL)'
 
 
 class IMAP(socketserver.StreamRequestHandler):

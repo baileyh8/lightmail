@@ -640,3 +640,36 @@ fn cached_previews_survive_header_refresh_aliases_and_restart() {
         140
     );
 }
+
+#[test]
+fn qq_missing_transfer_encoding_keeps_message_structure() {
+    use imap_proto::types::{AttributeValue, BodyStructure, ContentEncoding, Response};
+    // Synthetic shape matching QQ's NIL encoding response; no real mail data.
+    for encoding in ["NIL", "nil", "\"7BIT\"", "\"BASE64\""] {
+        let wire = format!("* 1 FETCH (UID 1 BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"UTF-8\") NIL NIL {encoding} 12 1 NIL NIL NIL))\r\n");
+        let (remaining, response) = imap_proto::parser::parse_response(wire.as_bytes())
+            .expect("QQ's missing encoding must not abort the FETCH batch");
+        assert!(remaining.is_empty());
+        let Response::Fetch(_, attributes) = response else {
+            panic!("expected FETCH")
+        };
+        let AttributeValue::BodyStructure(BodyStructure::Text { other, .. }) = &attributes[1]
+        else {
+            panic!("expected text structure")
+        };
+        assert_eq!(
+            other.transfer_encoding,
+            if encoding == "\"BASE64\"" {
+                ContentEncoding::Base64
+            } else {
+                ContentEncoding::SevenBit
+            }
+        );
+        assert_eq!(other.octets, 12);
+    }
+    let invalid = b"* 1 FETCH (UID 1 BODYSTRUCTURE (\"TEXT\" \"PLAIN\" NIL NIL NIL NIL NIL 1))\r\n";
+    assert!(
+        imap_proto::parser::parse_response(invalid).is_err(),
+        "do not relax the size field"
+    );
+}

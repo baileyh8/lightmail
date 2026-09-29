@@ -41,6 +41,9 @@ ammonia = "4"
 [dev-dependencies]
 tempfile = "3"
 
+[patch.crates-io]
+imap-proto = { path = "third_party/imap-proto" }
+
 [profile.release]
 opt-level = "s"
 lto = "thin"

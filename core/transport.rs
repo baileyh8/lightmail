@@ -12,6 +12,22 @@ use tokio::sync::Mutex as AsyncMutex;
 
 type MailSession = Session<tokio_native_tls::TlsStream<tokio::net::TcpStream>>;
 
+// The IMAP library may include whole responses (including headers) in errors.
+// Expose only a fixed category so diagnostics never disclose message contents.
+fn imap_failure(context: &str, error: async_imap::error::Error) -> MailError {
+    use async_imap::error::Error;
+    let reason = match error {
+        Error::Io(ref e) if e.to_string().contains("during parsing") => "服务器响应格式不兼容",
+        Error::Parse(_) => "服务器响应格式不兼容",
+        Error::Bad(_) => "服务器不支持此请求",
+        Error::No(_) => "服务器拒绝此请求",
+        Error::ConnectionLost => "服务器关闭了连接",
+        Error::Io(_) => "网络连接中断",
+        _ => "邮件协议处理失败",
+    };
+    fail(format!("{context}：{reason}"))
+}
+
 fn next_uids(descending: &[u32], maximum: u32, initial: bool) -> Vec<u32> {
     if initial {
         return descending.iter().copied().take(50).collect();
@@ -28,6 +44,33 @@ fn next_uids(descending: &[u32], maximum: u32, initial: bool) -> Vec<u32> {
 
 #[cfg(test)]
 mod batch_tests {
+    #[test]
+    fn protocol_errors_do_not_expose_server_responses() {
+        use async_imap::error::Error;
+        let cases = [
+            (
+                Error::No("private fixture response".into()),
+                "服务器拒绝此请求",
+            ),
+            (
+                Error::Bad("private fixture response".into()),
+                "服务器不支持此请求",
+            ),
+            (
+                Error::Io(std::io::Error::other(
+                    "private fixture during parsing of private headers",
+                )),
+                "服务器响应格式不兼容",
+            ),
+            (Error::ConnectionLost, "服务器关闭了连接"),
+        ];
+        for (error, reason) in cases {
+            let message = super::imap_failure("读取失败", error).to_string();
+            assert!(message.contains(reason));
+            assert!(!message.contains("private"));
+        }
+    }
+
     #[test]
     fn large_arrival_burst_has_no_uid_gap() {
         let all = (1..=1200).rev().collect::<Vec<_>>();
@@ -365,10 +408,10 @@ pub async fn sync(
                 let items = session
                     .uid_fetch(set, fields)
                     .await
-                    .map_err(|_| fail("获取邮件摘要失败"))?
+                    .map_err(|e| imap_failure("获取邮件摘要失败", e))?
                     .try_collect::<Vec<_>>()
                     .await
-                    .map_err(|_| fail("邮件摘要读取中断"))?;
+                    .map_err(|e| imap_failure("邮件摘要读取中断", e))?;
                 for item in items {
                     let Some(uid) = item.uid else {
                         continue;
@@ -581,10 +624,10 @@ async fn parts(s: &mut MailSession, m: &MessageSummary) -> Result<(Vec<Part>, Ve
     let items = s
         .uid_fetch(m.uid.to_string(), "(UID BODYSTRUCTURE)")
         .await
-        .map_err(|_| fail("无法获取邮件结构"))?
+        .map_err(|e| imap_failure("无法获取邮件结构", e))?
         .try_collect::<Vec<_>>()
         .await
-        .map_err(|_| fail("邮件结构读取失败"))?;
+        .map_err(|e| imap_failure("邮件结构读取失败", e))?;
     let bs = items
         .first()
         .and_then(|i| i.bodystructure())
