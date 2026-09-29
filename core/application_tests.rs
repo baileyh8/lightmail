@@ -386,3 +386,172 @@ fn shared_translation_integration() {
         .block_on(client.test(c, String::new()))
         .is_ok());
 }
+
+// Real loopback HTTP validates the token exchange/identity/refresh wiring without Google accounts.
+struct OAuthFixture {
+    endpoint: String,
+    requests: Arc<Mutex<Vec<(String, String)>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl OAuthFixture {
+    fn new(identity: &str, reject: bool) -> Self {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let observed = requests.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let identity = identity.to_string();
+        let worker = std::thread::spawn(move || {
+            while !stopped.load(Ordering::SeqCst) {
+                let Ok((mut socket, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut buf = [0; 1024];
+                loop {
+                    let n = socket.read(&mut buf).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&buf[..n]);
+                    if let Some(end) = bytes.windows(4).position(|p| p == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..end]);
+                        let length = headers
+                            .lines()
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                    assert!(bytes.len() < 16384);
+                }
+                let request = String::from_utf8(bytes).unwrap();
+                let path = request.split_whitespace().nth(1).unwrap().to_string();
+                let body = request.split_once("\r\n\r\n").unwrap().1.to_string();
+                observed.lock().unwrap().push((path.clone(), body));
+                let body = if path == "/identity" {
+                    serde_json::json!({"email":identity,"email_verified":true}).to_string()
+                } else {
+                    serde_json::json!({"access_token":"synthetic-access","refresh_token":"synthetic-refresh","expires_in":3600}).to_string()
+                };
+                let status = if reject { "400 Bad Request" } else { "200 OK" };
+                let _=write!(socket,"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body);
+            }
+        });
+        Self {
+            endpoint,
+            requests,
+            stop,
+            worker: Some(worker),
+        }
+    }
+    fn endpoints(&self) -> crate::auth::Endpoints {
+        crate::auth::Endpoints {
+            token: format!("{}/token", self.endpoint),
+            identity: format!("{}/identity", self.endpoint),
+        }
+    }
+}
+impl Drop for OAuthFixture {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.worker.take().unwrap().join().unwrap();
+    }
+}
+
+#[test]
+fn oauth_callback_exchange_and_identity_mismatch() {
+    crate::platform::runtime().block_on(async {
+        for matches in [true, false] {
+            let server = OAuthFixture::new(
+                if matches {
+                    "demo-work@example.com"
+                } else {
+                    "other@example.com"
+                },
+                false,
+            );
+            let (_dir, engine, _app, platform, _events) = fixture();
+            let account = engine
+                .accounts()
+                .unwrap()
+                .into_iter()
+                .find(|a| a.id == "demo-work")
+                .unwrap();
+            let mut login =
+                GoogleLogin::new(account, "synthetic-client".into(), platform.clone()).unwrap();
+            Arc::get_mut(&mut login).unwrap().endpoints = server.endpoints();
+            let url = url::Url::parse(&login.authorization_url()).unwrap();
+            let params: HashMap<_, _> = url
+                .query_pairs()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let endpoint = format!(
+                "{}?state={}&code=synthetic-code",
+                params["redirect_uri"], params["state"]
+            );
+            let task = tokio::spawn(login.finish(String::new()));
+            let result = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(endpoint)
+                .send()
+                .await
+                .unwrap();
+            assert!(result.status().is_success());
+            assert_eq!(task.await.unwrap().is_ok(), matches);
+            assert_eq!(
+                platform
+                    .read_secret("account:demo-work".into())
+                    .unwrap()
+                    .is_some(),
+                matches
+            );
+            let observed = server.requests.lock().unwrap();
+            assert_eq!(observed.len(), 2);
+            let fields: HashMap<_, _> = url::form_urlencoded::parse(observed[0].1.as_bytes())
+                .into_owned()
+                .collect();
+            assert_eq!(fields["grant_type"], "authorization_code");
+            assert_eq!(fields["redirect_uri"], params["redirect_uri"]);
+            use base64::Engine;
+            use sha2::Digest;
+            assert_eq!(
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(sha2::Sha256::digest(fields["code_verifier"].as_bytes())),
+                params["code_challenge"]
+            );
+        }
+    });
+}
+#[test]
+fn oauth_refresh_is_single_flight_and_failure_preserves_secret() {
+    crate::platform::runtime().block_on(async {
+        for reject in [false,true] {
+            let server=OAuthFixture::new("unused",reject);let (_dir,engine,mut app,platform,_events)=fixture();
+            let mut account=engine.accounts().unwrap().remove(0);account.provider="gmail".into();account.auth_kind="oauth".into();engine.save_account(account.clone()).unwrap();
+            Arc::get_mut(&mut app).unwrap().oauth_endpoints=server.endpoints();
+            engine.set_setting("google-client-id".into(),"synthetic-client".into()).unwrap();
+            let original=serde_json::json!({"accessToken":"expired","refreshToken":"keep-on-failure","expiresAt":0}).to_string();
+            let key=format!("account:{}",account.id);platform.write_secret(key.clone(),original.clone()).unwrap();
+            if reject {assert!(app.credential(&account.id).await.is_err());assert_eq!(platform.read_secret(key).unwrap().unwrap(),original);}
+            else {let mut tasks=Vec::new();for _ in 0..10 {let app=app.clone();let id=account.id.clone();tasks.push(tokio::spawn(async move {app.credential(&id).await}));}for task in tasks {assert_eq!(task.await.unwrap().unwrap(),"synthetic-access");}}
+            assert_eq!(server.requests.lock().unwrap().len(),1);
+        }
+    });
+}

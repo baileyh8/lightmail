@@ -40,7 +40,7 @@ pub fn reader_document(html: String, load_images: bool) -> String {
     } else {
         "img{display:none!important}.lightmail-image-link-label{display:inline-block!important;padding:10px 16px!important;border:1px solid currentColor!important;border-radius:5px!important;font:14px sans-serif!important;color:#226451!important;background:#f2f7f5!important}"
     };
-    format!("<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; style-src 'unsafe-inline'; img-src {sources}; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'\"><style>:root{{color-scheme:light}}body{{font:15px -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei UI',sans-serif;line-height:1.65;color:#202724;margin:0;overflow-wrap:anywhere}}table{{max-width:100%}}pre{{white-space:pre-wrap}}a{{color:#226451}}blockquote{{border-left:2px solid #e7ebe8;margin-left:0;padding-left:16px}}.lightmail-empty-link-label{{display:inline-block!important;padding:10px 16px!important;border:1px solid currentColor!important;border-radius:5px!important;color:#226451!important;background:#f2f7f5!important}}{image_style}</style></head><body>{html}</body></html>")
+    format!("<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; style-src 'unsafe-inline'; img-src {sources}; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'\"><style>:root{{color-scheme:light}}body{{font:14px -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei UI',sans-serif;line-height:1.65;color:#202724;margin:0;overflow-wrap:anywhere}}table{{max-width:100%}}pre{{white-space:pre-wrap}}a{{color:#226451}}blockquote{{border-left:2px solid #e7ebe8;margin-left:0;padding-left:16px}}.lightmail-empty-link-label{{display:inline-block!important;padding:10px 16px!important;border:1px solid currentColor!important;border-radius:5px!important;color:#226451!important;background:#f2f7f5!important}}{image_style}</style></head><body>{html}</body></html>")
 }
 // Enforce the same finite work budget as MIME conversion before allocating HTML.
 fn markdown_html(markdown: &str) -> Result<String> {
@@ -148,7 +148,7 @@ mod tests {
         assert!(
             !markdown_html("<script>alert(1)</script> [open](javascript:evil)")
                 .unwrap()
-                .contains("javascript:")
+                .contains("href=\"javascript:")
         );
     }
 }

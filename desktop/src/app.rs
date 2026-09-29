@@ -25,6 +25,8 @@ pub enum Page {
     Compose,
 }
 pub struct MailDesktop {
+    pub adding_account: bool,
+    pub probes: HashMap<String, Bounds<Pixels>>,
     pub engine: Arc<MailEngine>,
     pub service: Arc<MailApplication>,
     pub platform: Arc<DesktopPlatform>,
@@ -165,6 +167,8 @@ impl MailDesktop {
             }
         });
         let mut app = Self {
+            adding_account: false,
+            probes: HashMap::new(),
             engine,
             service,
             platform,
@@ -648,6 +652,7 @@ impl MailDesktop {
     ) {
         self.persist_compose(cx);
         self.page = Page::Accounts;
+        self.adding_account = false;
         self.removal = false;
         self.editing = id.and_then(|id| self.accounts.iter().find(|a| a.id == id).cloned());
         let a = self.editing.clone();

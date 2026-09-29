@@ -11,6 +11,21 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+// Private endpoint set: native callers cannot redirect OAuth credentials.
+#[derive(Clone)]
+pub(crate) struct Endpoints {
+    pub token: String,
+    pub identity: String,
+}
+impl Default for Endpoints {
+    fn default() -> Self {
+        Self {
+            token: "https://oauth2.googleapis.com/token".into(),
+            identity: "https://openidconnect.googleapis.com/v1/userinfo".into(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GoogleTokens {
@@ -23,8 +38,9 @@ pub(crate) async fn token_request(
     platform: &dyn PlatformServices,
     fields: Vec<(&str, String)>,
     previous: &str,
+    endpoints: &Endpoints,
 ) -> Result<GoogleTokens> {
-    let endpoint = "https://oauth2.googleapis.com/token";
+    let endpoint = endpoints.token.as_str();
     let response = http_client(platform, endpoint, 30)?
         .post(endpoint)
         .form(&fields)
@@ -54,6 +70,7 @@ pub(crate) async fn token_request(
 
 #[derive(uniffi::Object)]
 pub struct GoogleLogin {
+    pub(crate) endpoints: Endpoints,
     platform: Arc<dyn PlatformServices>,
     account: Account,
     client_id: String,
@@ -92,6 +109,7 @@ impl GoogleLogin {
             uuid::Uuid::new_v4().simple()
         );
         Ok(Arc::new(Self {
+            endpoints: Endpoints::default(),
             platform,
             account,
             client_id,
@@ -144,8 +162,8 @@ impl GoogleLogin {
             if !client_secret.is_empty() {
                 fields.push(("client_secret", client_secret));
             }
-            let token = token_request(self.platform.as_ref(), fields, "").await?;
-            let endpoint = "https://openidconnect.googleapis.com/v1/userinfo";
+            let token = token_request(self.platform.as_ref(), fields, "", &self.endpoints).await?;
+            let endpoint = self.endpoints.identity.as_str();
             let response = http_client(self.platform.as_ref(), endpoint, 20)?
                 .get(endpoint)
                 .bearer_auth(&token.access_token)

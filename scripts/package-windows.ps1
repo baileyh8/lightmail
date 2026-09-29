@@ -9,7 +9,7 @@ Copy-Item packaging/windows-readme.txt "$stage/README.txt"
 $zip = "dist/Lightmail-v$version-windows-x64.zip"
 Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
 $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-if (-not $iscc) { $iscc = Get-Item "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" -ErrorAction Stop }
-& $iscc.FullName "/DAppVersion=$version" packaging/windows.iss
+if ($iscc) { $compiler = $iscc.Source } else { $compiler = (Get-Item "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" -ErrorAction Stop).FullName }
+& $compiler "/DAppVersion=$version" packaging/windows.iss
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
 Get-ChildItem "dist/Lightmail-v$version-windows-x64*" | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content dist/SHA256SUMS-windows.txt -Encoding ascii

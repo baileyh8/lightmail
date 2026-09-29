@@ -1,5 +1,6 @@
 use crate::app::{date, MailDesktop, Page};
 use gpui::{prelude::*, *};
+use gpui_component::Icon;
 use gpui_component::{
     button::{Button, ButtonVariants},
     input::Input,
@@ -12,6 +13,25 @@ const MUTED: u32 = 0x69736e;
 const ACCENT: u32 = 0x226451;
 const LINE: u32 = 0xe7ebe8;
 const SELECTED: u32 = 0xeaf2ed;
+fn icon(name: &str) -> Icon {
+    Icon::default()
+        .path(SharedString::from(format!("icons/{name}.svg")))
+        .size(px(17.))
+}
+fn short_date(ts: i64) -> String {
+    let now = chrono::Local::now();
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|d| {
+            let d = d.with_timezone(&chrono::Local);
+            d.format(if d.date_naive() == now.date_naive() {
+                "%H:%M"
+            } else {
+                "%m月%d日"
+            })
+            .to_string()
+        })
+        .unwrap_or_default()
+}
 fn column() -> Div {
     div().flex().flex_col().min_w_0().min_h_0()
 }
@@ -23,7 +43,7 @@ fn muted(text: impl Into<SharedString>) -> Div {
 }
 fn title(text: impl Into<SharedString>) -> Div {
     div()
-        .text_xl()
+        .text_lg()
         .font_weight(FontWeight::SEMIBOLD)
         .child(text.into())
 }
@@ -39,6 +59,28 @@ fn folder_name(f: &Folder) -> String {
     .into()
 }
 
+// Geometry probes are active only in isolated demo acceptance runs.
+fn probe_marker(name: String, cx: &Context<MailDesktop>) -> impl IntoElement {
+    let weak = cx.entity().downgrade();
+    canvas(
+        move |bounds, _, cx| {
+            let _ = weak.update(cx, |s, _| {
+                if s.acceptance.is_some() {
+                    s.probes.insert(name, bounds);
+                }
+            });
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_full()
+}
+fn probe(name: &str, element: impl IntoElement, cx: &Context<MailDesktop>) -> Div {
+    div()
+        .relative()
+        .child(element)
+        .child(probe_marker(name.into(), cx))
+}
 impl MailDesktop {
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = column()
@@ -69,7 +111,42 @@ impl MailDesktop {
                     .cursor_pointer()
                     .when(active, |v| v.bg(rgb(SELECTED)).text_color(rgb(ACCENT)))
                     .hover(|s| s.bg(rgb(SELECTED)))
+                    .child(icon(match scope.as_str() {
+                        "inbox" => "inbox",
+                        "sent" => "plane",
+                        "outbox" => "clock",
+                        "drafts" => "file",
+                        _ => "star",
+                    }))
+                    .gap_3()
+                    .text_size(px(13.))
                     .child(label.clone())
+                    .child(div().flex_1())
+                    .child(muted({
+                        let count = match scope.as_str() {
+                            "inbox" => self
+                                .folders
+                                .iter()
+                                .filter(|f| f.role == "inbox")
+                                .map(|f| f.unread_count as usize)
+                                .sum(),
+                            "drafts" => self.drafts.iter().filter(|d| d.status == "draft").count(),
+                            "outbox" => self
+                                .drafts
+                                .iter()
+                                .filter(|d| {
+                                    ["queued", "sending", "failed", "delivery_unknown"]
+                                        .contains(&d.status.as_str())
+                                })
+                                .count(),
+                            _ => 0,
+                        };
+                        if count == 0 {
+                            String::new()
+                        } else {
+                            count.to_string()
+                        }
+                    }))
                     .on_click(cx.listener(move |s, _, w, cx| {
                         s.change_scope(
                             label.clone(),
@@ -86,7 +163,7 @@ impl MailDesktop {
             row()
                 .mt_6()
                 .px_3()
-                .child(muted("邮箱"))
+                .child(muted("邮箱").text_size(px(11.)))
                 .child(div().flex_1())
                 .child(
                     Button::new("add-mailbox")
@@ -188,7 +265,7 @@ impl MailDesktop {
             }
         }
         column()
-            .w(px(220.))
+            .w(px(218.))
             .flex_shrink_0()
             .h_full()
             .bg(rgb(0xf5f6f5))
@@ -200,24 +277,39 @@ impl MailDesktop {
                 row()
                     .h(px(70.))
                     .px_3()
-                    .child(div().text_2xl().text_color(rgb(ACCENT)).child("➤"))
-                    .child(title("轻邮")),
+                    .child(icon("plane").size(px(25.)).text_color(rgb(ACCENT)))
+                    .child(
+                        div()
+                            .text_size(px(23.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("轻邮"),
+                    ),
             )
-            .child(
+            .child(probe(
+                "compose",
                 Button::new("compose")
                     .label("写邮件")
+                    .icon(icon("compose"))
+                    .outline()
+                    .text_size(px(13.))
                     .w_full()
-                    .h(px(40.))
+                    .h(px(34.))
                     .on_click(cx.listener(|s, _, w, cx| s.new_draft(ComposeMode::New, w, cx))),
-            )
+                cx,
+            ))
             .child(list)
-            .child(
+            .child(probe(
+                "settings",
                 Button::new("settings")
                     .label("设置")
+                    .icon(icon("settings"))
+                    .justify_start()
+                    .text_size(px(13.))
                     .ghost()
                     .w_full()
                     .on_click(cx.listener(|s, _, w, cx| s.open_accounts(None, w, cx))),
-            )
+                cx,
+            ))
             .child(
                 muted(if self.demo {
                     "示例模式 · 不连接真实邮箱"
@@ -325,72 +417,96 @@ impl MailDesktop {
                                 .unwrap_or_default();
                             column()
                                 .id(SharedString::from(format!("message-{id}")))
-                                .h(px(108.))
-                                .mx_2()
-                                .px_4()
-                                .py_2()
-                                .gap_1()
-                                .rounded_md()
+                                .relative()
+                                .child(probe_marker(format!("message-{index}"), cx))
+                                .h(px(94.))
+                                .mx(px(5.))
+                                .pl(px(27.))
+                                .pr(px(12.))
+                                .pt(px(13.))
+                                .gap(px(5.))
+                                .rounded(px(7.))
                                 .cursor_pointer()
                                 .when(selected, |v| v.bg(rgb(SELECTED)))
-                                .hover(|s| s.bg(rgb(0xf4f7f5)))
-                                .border_b_1()
-                                .border_color(rgb(LINE))
+                                .hover(|v| v.bg(rgb(0xf3f6f3)))
+                                .when(m.unread, |v| {
+                                    v.child(
+                                        div()
+                                            .absolute()
+                                            .left(px(12.))
+                                            .top(px(21.))
+                                            .size(px(6.))
+                                            .rounded_full()
+                                            .bg(rgb(ACCENT)),
+                                    )
+                                })
                                 .child(
                                     row()
-                                        .h(px(24.))
+                                        .h(px(18.))
                                         .flex_shrink_0()
-                                        .child(
-                                            div()
-                                                .w(px(9.))
-                                                .text_color(rgb(ACCENT))
-                                                .child(if m.unread { "•" } else { "" }),
-                                        )
                                         .child(
                                             div()
                                                 .flex_1()
                                                 .overflow_hidden()
                                                 .text_ellipsis()
                                                 .whitespace_nowrap()
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .child(if m.from_name.is_empty() {
-                                                    m.from_address.clone()
+                                                .text_size(px(13.))
+                                                .font_weight(if m.unread {
+                                                    FontWeight::SEMIBOLD
                                                 } else {
-                                                    m.from_name.clone()
+                                                    FontWeight::MEDIUM
+                                                })
+                                                .child(if m.from_name.is_empty() {
+                                                    m.from_address
+                                                } else {
+                                                    m.from_name
                                                 }),
                                         )
-                                        .child(muted(
-                                            date(m.timestamp).chars().skip(5).collect::<String>(),
-                                        )),
+                                        .child(muted(short_date(m.timestamp)).text_size(px(11.))),
                                 )
                                 .child(
                                     div()
-                                        .h(px(20.))
+                                        .h(px(18.))
                                         .flex_shrink_0()
                                         .overflow_hidden()
                                         .text_ellipsis()
                                         .whitespace_nowrap()
-                                        .text_sm()
+                                        .text_size(px(12.))
                                         .child(m.subject),
                                 )
                                 .child(
-                                    muted(if m.snippet.is_empty() {
-                                        "正文将在打开时加载".into()
-                                    } else {
-                                        m.snippet
-                                    })
-                                    .h(px(20.))
-                                    .flex_shrink_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap(),
+                                    row()
+                                        .h(px(18.))
+                                        .flex_shrink_0()
+                                        .child(
+                                            muted(if m.snippet.is_empty() {
+                                                "正文将在打开时加载".into()
+                                            } else {
+                                                m.snippet
+                                            })
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap(),
+                                        )
+                                        .child(
+                                            muted(account)
+                                                .text_size(px(10.))
+                                                .w(px(70.))
+                                                .text_right()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .whitespace_nowrap(),
+                                        ),
                                 )
                                 .child(
-                                    muted(account)
-                                        .h(px(16.))
-                                        .flex_shrink_0()
-                                        .text_xs()
-                                        .text_right(),
+                                    div()
+                                        .absolute()
+                                        .left(px(27.))
+                                        .right(px(7.))
+                                        .bottom_0()
+                                        .h(px(0.5))
+                                        .bg(rgb(LINE)),
                                 )
                                 .on_click(cx.listener(move |s, _, _, cx| s.select(id.clone(), cx)))
                         })
@@ -403,6 +519,7 @@ impl MailDesktop {
         };
         column()
             .w(px(365.))
+            .bg(rgb(0xfcfcfb))
             .flex_shrink_0()
             .h_full()
             .border_r_1()
@@ -413,23 +530,41 @@ impl MailDesktop {
                     .gap_4()
                     .child(
                         row()
-                            .child(title(self.title.clone()))
+                            .child(
+                                div()
+                                    .text_size(px(21.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(self.title.clone()),
+                            )
                             .child(div().flex_1())
                             .child(
                                 Button::new("refresh")
-                                    .label("刷新")
+                                    .icon(icon("refresh"))
+                                    .tooltip("刷新邮箱")
                                     .ghost()
                                     .on_click(cx.listener(|s, _, _, cx| s.refresh(cx))),
                             ),
                     )
-                    .child(Input::new(&self.fields["search"]).small())
+                    .child(
+                        Input::new(&self.fields["search"])
+                            .small()
+                            .prefix(icon("search"))
+                            .bg(rgb(0xf3f5f3))
+                            .text_size(px(12.)),
+                    )
                     .child(
                         row()
                             .child(
                                 Button::new("all")
                                     .label("全部")
                                     .ghost()
-                                    .selected(!self.unread_only)
+                                    .rounded(px(0.))
+                                    .text_size(px(12.))
+                                    .when(!self.unread_only, |b| {
+                                        b.text_color(rgb(ACCENT))
+                                            .border_b_2()
+                                            .border_color(rgb(ACCENT))
+                                    })
                                     .on_click(cx.listener(|s, _, _, cx| {
                                         s.unread_only = false;
                                         s.page_offset = 0;
@@ -441,7 +576,13 @@ impl MailDesktop {
                                 Button::new("unread")
                                     .label("未读")
                                     .ghost()
-                                    .selected(self.unread_only)
+                                    .rounded(px(0.))
+                                    .text_size(px(12.))
+                                    .when(self.unread_only, |b| {
+                                        b.text_color(rgb(ACCENT))
+                                            .border_b_2()
+                                            .border_color(rgb(ACCENT))
+                                    })
                                     .on_click(cx.listener(|s, _, _, cx| {
                                         s.unread_only = true;
                                         s.page_offset = 0;
@@ -475,7 +616,7 @@ impl MailDesktop {
                     .p_3()
                     .border_t_1()
                     .border_color(rgb(LINE))
-                    .child(muted("每邮箱 20 封正文缓存").text_xs())
+                    .child(muted("最近邮件 · 正文按需读取").text_size(px(10.)))
                     .child(div().flex_1())
                     .when(self.page_offset > 0, |v| {
                         v.child(
@@ -489,6 +630,8 @@ impl MailDesktop {
                     .child(
                         Button::new("older")
                             .label("加载更多")
+                            .text_size(px(10.))
+                            .text_color(rgb(ACCENT))
                             .ghost()
                             .small()
                             .disabled(draft_list || self.busy)
@@ -507,14 +650,16 @@ impl MailDesktop {
                 .border_color(rgb(LINE))
                 .child(
                     Button::new("archive")
-                        .label("归档")
+                        .icon(icon("archive"))
+                        .tooltip("归档")
                         .ghost()
                         .disabled(!selected)
                         .on_click(cx.listener(|s, _, _, cx| s.move_selected("archive", cx))),
                 )
                 .child(
                     Button::new("trash")
-                        .label("删除")
+                        .icon(icon("trash"))
+                        .tooltip("移到垃圾箱")
                         .ghost()
                         .disabled(!selected)
                         .on_click(cx.listener(|s, _, _, cx| s.move_selected("trash", cx))),
@@ -536,6 +681,9 @@ impl MailDesktop {
                 .child(div().flex_1())
                 .child(
                     Button::new("translate")
+                        .icon(icon("language"))
+                        .outline()
+                        .text_size(px(12.))
                         .label(if self.translating {
                             "取消翻译"
                         } else {
@@ -551,23 +699,27 @@ impl MailDesktop {
                             }
                         })),
                 )
-                .child(
+                .child(probe(
+                    "copy-markdown",
                     Button::new("copy-markdown")
                         .label("复制 Markdown")
+                        .icon(icon("copy"))
+                        .text_size(px(12.))
                         .ghost()
                         .disabled(!body_ready)
                         .on_click(cx.listener(|s, _, _, cx| s.copy(cx))),
-                ),
+                    cx,
+                )),
         );
         if let Some(message) = &self.selected {
             let mut header = column()
-                .px_7()
+                .px(px(36.))
                 .pt_6()
                 .pb_4()
                 .gap_3()
                 .child(
                     div()
-                        .text_2xl()
+                        .text_xl()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(message.subject.clone()),
                 )
@@ -660,10 +812,10 @@ impl MailDesktop {
                     .child(muted("这封邮件暂无可显示正文"))
                     .into_any_element()
             };
-            panel = panel.child(div().flex_1().min_h_0().px_7().child(content));
+            panel = panel.child(div().flex_1().min_h_0().px(px(36.)).child(content));
             if let Some(body) = &self.body {
                 if !body.attachments.is_empty() {
-                    let mut files = row().px_7().py_2();
+                    let mut files = row().px(px(36.)).py_2();
                     for attachment in &body.attachments {
                         let a = attachment.clone();
                         files = files.child(
@@ -682,11 +834,13 @@ impl MailDesktop {
             panel =
                 panel.child(
                     row()
-                        .px_7()
+                        .px(px(36.))
                         .h(px(58.))
                         .child(
                             Button::new("reply")
                                 .label("回复")
+                                .icon(icon("reply"))
+                                .outline()
                                 .disabled(!body_ready)
                                 .on_click(cx.listener(|s, _, w, cx| {
                                     s.new_draft(ComposeMode::Reply, w, cx)
@@ -718,7 +872,7 @@ impl MailDesktop {
                     .justify_center()
                     .items_center()
                     .gap_4()
-                    .child(div().text_3xl().text_color(rgb(ACCENT)).child("✉"))
+                    .child(icon("envelope").size(px(48.)).text_color(rgb(0x80a899)))
                     .child(title("选一封邮件，慢慢读。"))
                     .child(muted("全文翻译与 Markdown 复制，随时在手边。")),
             );
@@ -735,7 +889,7 @@ impl MailDesktop {
         let mut root = column().flex_1().h_full().child(
             row()
                 .h(px(70.))
-                .px_7()
+                .px(px(36.))
                 .border_b_1()
                 .border_color(rgb(LINE))
                 .child(title("设置"))
@@ -747,7 +901,8 @@ impl MailDesktop {
                         .selected(self.page == Page::Accounts)
                         .on_click(cx.listener(|s, _, w, cx| s.open_accounts(None, w, cx))),
                 )
-                .child(
+                .child(probe(
+                    "translation-tab",
                     Button::new("translation-tab")
                         .label("翻译")
                         .ghost()
@@ -758,15 +913,19 @@ impl MailDesktop {
                             s.record("translation-page");
                             cx.notify();
                         })),
-                )
-                .child(
+                    cx,
+                ))
+                .child(probe(
+                    "storage-tab",
                     Button::new("storage-tab")
                         .label("存储")
                         .ghost()
                         .selected(self.page == Page::Storage)
                         .on_click(cx.listener(|s, _, _, cx| s.open_storage(cx))),
-                )
-                .child(
+                    cx,
+                ))
+                .child(probe(
+                    "settings-done",
                     Button::new("settings-done")
                         .label("完成")
                         .on_click(cx.listener(|s, _, _, cx| {
@@ -774,7 +933,8 @@ impl MailDesktop {
                             s.record("settings-close");
                             cx.notify();
                         })),
-                ),
+                    cx,
+                )),
         );
         if self.page == Page::Accounts {
             let mut accounts = column()
@@ -799,6 +959,8 @@ impl MailDesktop {
                 accounts = accounts.child(
                     column()
                         .id(SharedString::from(format!("settings-{}", a.id)))
+                        .relative()
+                        .child(probe_marker(format!("settings-{}", a.id), cx))
                         .p_3()
                         .gap_1()
                         .w_full()
@@ -1000,7 +1162,7 @@ impl MailDesktop {
         root
     }
     fn compose_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        column().flex_1().h_full().child(row().h(px(70.)).px_7().border_b_1().border_color(rgb(LINE)).child(title("写邮件")).child(div().flex_1()).child(Button::new("save-draft").label("保存草稿").on_click(cx.listener(|s,_,_,cx|s.save_draft(false,cx)))).child(Button::new("send").label("发送").primary().disabled(self.busy).on_click(cx.listener(|s,_,_,cx|s.save_draft(true,cx)))))
+        column().flex_1().h_full().child(row().h(px(70.)).px(px(36.)).border_b_1().border_color(rgb(LINE)).child(title("写邮件")).child(div().flex_1()).child(probe("save-draft",Button::new("save-draft").label("保存草稿").on_click(cx.listener(|s,_,_,cx|s.save_draft(false,cx))),cx)).child(Button::new("send").label("发送").primary().disabled(self.busy).on_click(cx.listener(|s,_,_,cx|s.save_draft(true,cx)))))
             .child(column().id("compose-form").flex_1().overflow_y_scroll().p_7().gap_4()
                 .child(muted(format!("发件人：{}",self.draft.as_ref().and_then(|d|self.accounts.iter().find(|a|a.id==d.account_id)).map(|a|a.address.as_str()).unwrap_or_default())))
                 .child(row().flex_wrap().children(self.accounts.iter().map(|a|{let id=a.id.clone();Button::new(SharedString::from(format!("from-{id}"))).label(a.name.clone()).ghost().selected(self.draft.as_ref().is_some_and(|d|d.account_id==id)).on_click(cx.listener(move|s,_,_,cx|{if let Some(d)=&mut s.draft{d.account_id=id.clone();}s.persist_compose(cx);cx.notify();}))})))
@@ -1022,59 +1184,91 @@ impl Render for MailDesktop {
         }
         self.service.set_active(window.is_window_active());
         self.update_reader(window, cx);
-        let content = match self.page {
-            Page::Mail => row()
+        let settings = matches!(
+            self.page,
+            Page::Accounts | Page::Translation | Page::Storage
+        );
+        let content = if self.page == Page::Compose {
+            self.compose_panel(cx).into_any_element()
+        } else {
+            row()
                 .items_start()
                 .gap_0()
                 .flex_1()
                 .min_h_0()
                 .child(self.mail_list(cx))
                 .child(self.reader_panel(cx))
-                .into_any_element(),
-            Page::Accounts | Page::Translation | Page::Storage => {
-                self.settings_panel(cx).into_any_element()
-            }
-            Page::Compose => self.compose_panel(cx).into_any_element(),
+                .into_any_element()
         };
-        row()
+        div()
+            .relative()
             .size_full()
-            .items_start()
-            .gap_0()
             .font_family(if cfg!(windows) {
                 "Microsoft YaHei UI"
             } else {
                 ".SystemUIFont"
             })
-            .text_base()
+            .text_size(px(13.))
             .text_color(rgb(INK))
             .bg(rgb(0xffffff))
-            .child(self.sidebar(cx))
             .child(
-                column()
-                    .flex_1()
-                    .h_full()
-                    .child(content)
-                    .when(!self.status.is_empty(), |v| {
-                        v.child(
-                            row()
-                                .min_h(px(34.))
-                                .px_5()
-                                .py_2()
-                                .bg(rgb(SELECTED))
-                                .child(muted(self.status.clone()))
-                                .child(div().flex_1())
-                                .child(
-                                    Button::new("dismiss-status")
-                                        .label("×")
-                                        .ghost()
-                                        .small()
-                                        .on_click(cx.listener(|s, _, _, cx| {
-                                            s.status.clear();
-                                            cx.notify();
-                                        })),
-                                ),
-                        )
-                    }),
+                row()
+                    .size_full()
+                    .items_start()
+                    .gap_0()
+                    .child(self.sidebar(cx))
+                    .child(column().flex_1().h_full().child(content)),
             )
+            .when(settings, |root| {
+                root.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x20272433))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .w(px(960.))
+                                .h(px(700.))
+                                .max_h_full()
+                                .rounded(px(16.))
+                                .overflow_hidden()
+                                .bg(rgb(0xffffff))
+                                .border_1()
+                                .border_color(rgb(LINE))
+                                .shadow_lg()
+                                .child(self.settings_panel(cx)),
+                        ),
+                )
+            })
+            .when(!self.status.is_empty(), |root| {
+                root.child(
+                    div()
+                        .absolute()
+                        .bottom(px(16.))
+                        .right(px(16.))
+                        .max_w(px(600.))
+                        .rounded_md()
+                        .bg(rgb(SELECTED))
+                        .border_1()
+                        .border_color(rgb(LINE))
+                        .px_4()
+                        .py_2()
+                        .child(
+                            row().child(muted(self.status.clone())).child(
+                                Button::new("dismiss-status")
+                                    .label("×")
+                                    .ghost()
+                                    .small()
+                                    .on_click(cx.listener(|s, _, _, cx| {
+                                        s.status.clear();
+                                        cx.notify();
+                                    })),
+                            ),
+                        ),
+                )
+            })
     }
 }

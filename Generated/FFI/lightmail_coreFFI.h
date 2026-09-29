@@ -750,6 +750,21 @@ RustBuffer uniffi_lightmail_core_fn_func_compose_draft(RustBuffer account, RustB
 RustBuffer uniffi_lightmail_core_fn_func_export_markdown(RustBuffer message, RustBuffer body, RustBuffer translation, RustBuffer mode, RustBuffer date_label, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_FN_FUNC_PROVIDER_PRESET
+#define UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_FN_FUNC_PROVIDER_PRESET
+RustBuffer uniffi_lightmail_core_fn_func_provider_preset(RustBuffer provider, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_FN_FUNC_READER_DOCUMENT
+#define UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_FN_FUNC_READER_DOCUMENT
+RustBuffer uniffi_lightmail_core_fn_func_reader_document(RustBuffer html, int8_t load_images, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_FN_FUNC_RENDER_BODY_DOCUMENT
+#define UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_FN_FUNC_RENDER_BODY_DOCUMENT
+RustBuffer uniffi_lightmail_core_fn_func_render_body_document(RustBuffer body, RustBuffer translation, RustBuffer mode, int8_t load_images, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_FN_FUNC_TRANSLATION_BLOCKS
 #define UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_FN_FUNC_TRANSLATION_BLOCKS
 RustBuffer uniffi_lightmail_core_fn_func_translation_blocks(RustBuffer markdown, RustCallStatus *_Nonnull out_status
@@ -1044,6 +1059,24 @@ uint16_t uniffi_lightmail_core_checksum_func_compose_draft(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_CHECKSUM_FUNC_EXPORT_MARKDOWN
 #define UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_CHECKSUM_FUNC_EXPORT_MARKDOWN
 uint16_t uniffi_lightmail_core_checksum_func_export_markdown(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_CHECKSUM_FUNC_PROVIDER_PRESET
+#define UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_CHECKSUM_FUNC_PROVIDER_PRESET
+uint16_t uniffi_lightmail_core_checksum_func_provider_preset(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_CHECKSUM_FUNC_READER_DOCUMENT
+#define UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_CHECKSUM_FUNC_READER_DOCUMENT
+uint16_t uniffi_lightmail_core_checksum_func_reader_document(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_CHECKSUM_FUNC_RENDER_BODY_DOCUMENT
+#define UNIFFI_FFIDEF_UNIFFI_LIGHTMAIL_CORE_CHECKSUM_FUNC_RENDER_BODY_DOCUMENT
+uint16_t uniffi_lightmail_core_checksum_func_render_body_document(void
 
 );
 #endif

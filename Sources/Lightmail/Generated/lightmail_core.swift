@@ -3235,6 +3235,76 @@ public func FfiConverterTypeMessageSummary_lower(_ value: MessageSummary) -> Rus
 }
 
 
+public struct ProviderPreset: Equatable, Hashable {
+    public var imapHost: String
+    public var imapPort: UInt16
+    public var smtpHost: String
+    public var smtpPort: UInt16
+    public var authKind: String
+    public var sentMode: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(imapHost: String, imapPort: UInt16, smtpHost: String, smtpPort: UInt16, authKind: String, sentMode: String) {
+        self.imapHost = imapHost
+        self.imapPort = imapPort
+        self.smtpHost = smtpHost
+        self.smtpPort = smtpPort
+        self.authKind = authKind
+        self.sentMode = sentMode
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ProviderPreset: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProviderPreset: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProviderPreset {
+        return
+            try ProviderPreset(
+                imapHost: FfiConverterString.read(from: &buf),
+                imapPort: FfiConverterUInt16.read(from: &buf),
+                smtpHost: FfiConverterString.read(from: &buf),
+                smtpPort: FfiConverterUInt16.read(from: &buf),
+                authKind: FfiConverterString.read(from: &buf),
+                sentMode: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProviderPreset, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.imapHost, into: &buf)
+        FfiConverterUInt16.write(value.imapPort, into: &buf)
+        FfiConverterString.write(value.smtpHost, into: &buf)
+        FfiConverterUInt16.write(value.smtpPort, into: &buf)
+        FfiConverterString.write(value.authKind, into: &buf)
+        FfiConverterString.write(value.sentMode, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProviderPreset_lift(_ buf: RustBuffer) throws -> ProviderPreset {
+    return try FfiConverterTypeProviderPreset.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProviderPreset_lower(_ value: ProviderPreset) -> RustBuffer {
+    return FfiConverterTypeProviderPreset.lower(value)
+}
+
+
 public struct ProxyRoute: Equatable, Hashable {
     public var kind: String
     public var host: String
@@ -4328,6 +4398,31 @@ public func exportMarkdown(message: MessageSummary, body: MailBody, translation:
     )
 })
 }
+public func providerPreset(provider: String) -> ProviderPreset  {
+    return try!  FfiConverterTypeProviderPreset_lift(try! rustCall() {
+    uniffi_lightmail_core_fn_func_provider_preset(
+        FfiConverterString.lower(provider),$0
+    )
+})
+}
+public func readerDocument(html: String, loadImages: Bool) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_lightmail_core_fn_func_reader_document(
+        FfiConverterString.lower(html),
+        FfiConverterBool.lower(loadImages),$0
+    )
+})
+}
+public func renderBodyDocument(body: MailBody, translation: TranslationResult?, mode: ExportMode, loadImages: Bool)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_func_render_body_document(
+        FfiConverterTypeMailBody_lower(body),
+        FfiConverterOptionTypeTranslationResult.lower(translation),
+        FfiConverterTypeExportMode_lower(mode),
+        FfiConverterBool.lower(loadImages),$0
+    )
+})
+}
 public func translationBlocks(markdown: String) -> [TranslationBlock]  {
     return try!  FfiConverterSequenceTypeTranslationBlock.lift(try! rustCall() {
     uniffi_lightmail_core_fn_func_translation_blocks(
@@ -4385,6 +4480,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_lightmail_core_checksum_func_export_markdown() != 25506) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_func_provider_preset() != 49271) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_func_reader_document() != 19118) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_func_render_body_document() != 13603) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_lightmail_core_checksum_func_translation_blocks() != 57519) {

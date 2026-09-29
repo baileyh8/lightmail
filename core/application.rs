@@ -50,6 +50,7 @@ struct Job {
 }
 #[derive(uniffi::Object)]
 pub struct MailApplication {
+    pub(crate) oauth_endpoints: auth::Endpoints,
     engine: Arc<MailEngine>,
     platform: Arc<dyn PlatformServices>,
     observer: Arc<dyn ApplicationObserver>,
@@ -74,6 +75,7 @@ impl MailApplication {
         observer: Arc<dyn ApplicationObserver>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            oauth_endpoints: auth::Endpoints::default(),
             engine,
             platform,
             observer,
@@ -586,7 +588,7 @@ impl MailApplication {
             false,
         );
     }
-    async fn credential(&self, id: &str) -> Result<String> {
+    pub(crate) async fn credential(&self, id: &str) -> Result<String> {
         let lane = self.lane(id);
         let guard = lane.credential.clone().lock_owned().await;
         let a = self.engine.account(id)?;
@@ -624,8 +626,13 @@ impl MailApplication {
         if !secret.is_empty() {
             fields.push(("client_secret", secret));
         }
-        let refreshed =
-            auth::token_request(self.platform.as_ref(), fields, &token.refresh_token).await?;
+        let refreshed = auth::token_request(
+            self.platform.as_ref(),
+            fields,
+            &token.refresh_token,
+            &self.oauth_endpoints,
+        )
+        .await?;
         self.engine.account(id)?;
         let platform = self.platform.clone();
         let key = format!("account:{id}");

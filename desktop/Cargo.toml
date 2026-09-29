@@ -9,6 +9,9 @@ publish = false
 name = "Lightmail"
 path = "src/main.rs"
 
+[features]
+acceptance = []
+
 [dependencies]
 lightmail_core = { path = ".." }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "windows-manifest", "runtime_shaders"] }
@@ -24,6 +27,7 @@ uuid = { version = "1", features = ["v4"] }
 url = "2"
 chrono = "0.4"
 rfd = "0.15"
+raw-window-handle = "0.6"
 open = "5"
 
 [target.'cfg(windows)'.dependencies]

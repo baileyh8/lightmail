@@ -58,9 +58,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Rust toolchain
         run: rustup update stable --no-self-update
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: windows-cache
+        with:
+          path: target/release
+          key: windows-gpui-v1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-gpui-v1-
       - name: Build native GPUI client
         shell: pwsh
         run: ./scripts/build-windows.ps1
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: steps.windows-cache.outputs.cache-hit != 'true'
+        with:
+          path: target/release
+          key: windows-gpui-v1-${{ hashFiles('Cargo.lock') }}
       - name: Windows credential and proxy tests
         shell: pwsh
         run: |
@@ -72,6 +83,24 @@ jobs:
         run: |
           choco install innosetup --yes --no-progress
           ./scripts/package-windows.ps1
+      - name: Build UI acceptance harness
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          cargo build --locked --release -p lightmail-desktop --features acceptance
+          if ($LASTEXITCODE -ne 0) { throw 'Acceptance build failed' }
+      - name: Native UI and installer acceptance
+        shell: pwsh
+        run: ./scripts/check-windows.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: windows-acceptance-evidence
+          path: |
+            build/windows-acceptance/*.png
+            build/windows-acceptance/result.json
+            build/windows-acceptance/native/*.json
+          retention-days: 7
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: lightmail-windows-x64
