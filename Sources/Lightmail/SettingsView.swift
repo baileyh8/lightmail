@@ -359,29 +359,15 @@ struct AccountEditor: View {
     }
   }
   func applyPreset(_ p: String) {
-    switch p {
-    case "gmail":
-      imapHost = "imap.gmail.com"
-      smtpHost = "smtp.gmail.com"
-      authKind = "oauth"
-      color = "#226451"
-    case "163":
-      imapHost = "imap.163.com"
-      smtpHost = "smtp.163.com"
-      authKind = "password"
-      color = "#BC795F"
-    case "qq":
-      imapHost = "imap.qq.com"
-      smtpHost = "smtp.qq.com"
-      authKind = "password"
-      color = "#C19944"
-    default:
-      authKind = "password"
-      color = "#6687B7"
-    }
-    imapPort = 993
-    smtpPort = 465
+    let preset = providerPreset(provider: p)
+    imapHost = preset.imapHost
+    smtpHost = preset.smtpHost
+    authKind = preset.authKind
+    imapPort = Int(preset.imapPort)
+    smtpPort = Int(preset.smtpPort)
+    color = ["gmail": "#226451", "163": "#BC795F", "qq": "#C19944"][p] ?? "#6687B7"
   }
+
   func save(forceLogin: Bool = false) async {
     busy = true
     defer { busy = false }

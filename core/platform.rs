@@ -106,7 +106,12 @@ pub(crate) fn http_client(
         } else {
             "http"
         };
-        let proxy = format!("{scheme}://{}:{}", route.host, route.port);
+        let host = if route.host.contains(':') {
+            format!("[{}]", route.host.trim_matches(['[', ']']))
+        } else {
+            route.host
+        };
+        let proxy = format!("{scheme}://{host}:{}", route.port);
         builder = builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| fail("代理地址无效"))?);
     }
     builder.build().map_err(|_| fail("无法建立网络会话"))

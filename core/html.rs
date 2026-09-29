@@ -1,4 +1,4 @@
-use html5ever::{local_name, namespace_url, ns, tendril::TendrilSink, Attribute, QualName};
+use html5ever::{local_name, ns, tendril::TendrilSink, Attribute, QualName};
 use markup5ever_rcdom::{Handle, Node, NodeData, RcDom, SerializableHandle};
 use std::{cell::RefCell, rc::Rc};
 
