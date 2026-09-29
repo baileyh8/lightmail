@@ -203,12 +203,42 @@ impl MailApplication {
                 let guard = lane.credential.clone().lock_owned().await;
                 tokio::task::spawn_blocking(move || {
                     let _guard = guard;
-                    if !password.is_empty() {
-                        self.platform
-                            .write_secret(format!("account:{}", account.id), password)?;
+                    let key = format!("account:{}", account.id);
+                    let local = ["demo", "local"].contains(&account.provider.as_str());
+                    // OAuth tokens are written only by GoogleLogin and refresh. A value
+                    // left in a hidden password field must never replace them.
+                    let password = if account.auth_kind == "oauth" || local {
+                        String::new()
+                    } else {
+                        password
+                    };
+                    let existing = self.engine.account(&account.id).ok();
+                    let needs_password = account.auth_kind == "password"
+                        && !local
+                        && existing.as_ref().is_none_or(|a| a.auth_kind != "password");
+                    if needs_password && password.is_empty() {
+                        return Err(fail("请填写密码或客户端授权码"));
                     }
+                    // Remember the previous secret only when replacing it. An unreadable
+                    // entry leaves nothing to restore, which matches the old behavior.
+                    let previous = if password.is_empty() {
+                        None
+                    } else {
+                        let previous = self.platform.read_secret(key.clone()).ok();
+                        self.platform.write_secret(key.clone(), password)?;
+                        previous
+                    };
                     self.stop_account(&account.id);
-                    self.engine.save_account(account.clone())?;
+                    if let Err(error) = self.engine.save_account(account.clone()) {
+                        if let Some(previous) = previous {
+                            let _ = match previous {
+                                Some(value) => self.platform.write_secret(key, value),
+                                None => self.platform.remove_secret(key),
+                            };
+                        }
+                        let _ = self.reconcile_workers();
+                        return Err(error);
+                    }
                     self.data(&account.id);
                     self.reconcile_workers()
                 })
@@ -224,25 +254,38 @@ impl MailApplication {
                 let guard = lane.credential.clone().lock_owned().await;
                 tokio::task::spawn_blocking(move || {
                     let _guard = guard;
-                    self.platform
-                        .remove_secret(format!("account:{account_id}"))?;
-                    self.stop_account(&account_id);
-                    let ids: Vec<_> = self
+                    let drafts: Vec<_> = self
                         .engine
                         .drafts()?
                         .into_iter()
                         .filter(|d| d.account_id == account_id)
-                        .map(|d| d.id)
                         .collect();
-                    for id in ids {
-                        if let Some(job) = self.sends.lock().unwrap().remove(&id) {
+                    // A send waiting for credentials is still queued, and one past them is
+                    // sending. Holding this account's credential lock keeps new submissions
+                    // from slipping between the check and the removal.
+                    if drafts
+                        .iter()
+                        .any(|d| ["queued", "sending"].contains(&d.status.as_str()))
+                    {
+                        return Err(fail(
+                            "此账号有待发送或正在提交的邮件，请先撤销待发送邮件或等待发送结果",
+                        ));
+                    }
+                    self.stop_account(&account_id);
+                    for d in &drafts {
+                        if let Some(job) = self.sends.lock().unwrap().remove(&d.id) {
                             job.abort.abort();
                         }
                     }
                     self.engine.remove_account(account_id.clone())?;
                     self.lanes.lock().unwrap().remove(&account_id);
                     self.data(&account_id);
-                    Ok(())
+                    // The account is gone either way; a vault entry left behind is harmless.
+                    self.platform
+                        .remove_secret(format!("account:{account_id}"))
+                        .map_err(|_| {
+                            fail("邮箱已移除，但系统凭据未能清理，可在系统凭据管理器中手动删除")
+                        })
                 })
                 .await
                 .map_err(|_| fail("账号移除已中断"))?
@@ -636,13 +679,24 @@ impl MailApplication {
         self.engine.account(id)?;
         let platform = self.platform.clone();
         let key = format!("account:{id}");
-        let value = serde_json::to_string(&refreshed).map_err(fail)?;
-        tokio::task::spawn_blocking(move || {
+        let encoded = serde_json::to_string(&refreshed).map_err(fail)?;
+        // GoogleLogin writes a new grant without this lock. Only replace the exact
+        // value that was refreshed, so a sign-in finishing meanwhile is kept.
+        let newer = tokio::task::spawn_blocking(move || {
             let _guard = guard;
-            platform.write_secret(key, value)
+            let current = platform.read_secret(key.clone())?;
+            if current.as_deref() != Some(value.as_str()) {
+                return Ok(current);
+            }
+            platform.write_secret(key, encoded).map(|_| None)
         })
         .await
         .map_err(|_| fail("凭证保存已中断"))??;
+        if let Some(token) = newer.and_then(|s| serde_json::from_str::<GoogleTokens>(&s).ok()) {
+            if token.expires_at > now() as f64 + 120.0 {
+                return Ok(token.access_token);
+            }
+        }
         Ok(refreshed.access_token)
     }
     async fn sync_inner(&self, id: &str, path: Option<String>, older: bool) -> Result<()> {

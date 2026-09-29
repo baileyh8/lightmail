@@ -562,3 +562,214 @@ fn oauth_refresh_is_single_flight_and_failure_preserves_secret() {
         }
     });
 }
+
+fn real_account(id: &str, provider: &str, auth: &str) -> Account {
+    // Disabled accounts never start background workers, so tests stay offline.
+    Account {
+        id: id.into(),
+        name: id.into(),
+        address: format!("{id}@example.com"),
+        provider: provider.into(),
+        imap_host: "imap.example.com".into(),
+        imap_port: 993,
+        smtp_host: "smtp.example.com".into(),
+        smtp_port: 465,
+        auth_kind: auth.into(),
+        color: "#226451".into(),
+        enabled: false,
+        sent_mode: "server".into(),
+    }
+}
+fn force_status(engine: &MailEngine, draft: &Draft, status: &str) {
+    let mut d = draft.clone();
+    d.status = status.into();
+    engine
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE drafts SET status=?1,data=?2 WHERE id=?3",
+            rusqlite::params![status, serde_json::to_string(&d).unwrap(), d.id],
+        )
+        .unwrap();
+}
+
+#[test]
+fn account_removal_refuses_pending_mail_and_clears_the_vault_last() {
+    let (_dir, engine, app, platform, _) = fixture();
+    let rt = crate::platform::runtime();
+    let account = real_account("pending", "custom", "password");
+    engine.save_account(account.clone()).unwrap();
+    platform
+        .write_secret("account:pending".into(), "synthetic".into())
+        .unwrap();
+    let mut draft = compose_draft(account, None, None, ComposeMode::New, String::new());
+    draft.to = "someone@example.com".into();
+    let draft = engine.save_draft(draft).unwrap();
+    for status in ["queued", "sending"] {
+        force_status(&engine, &draft, status);
+        assert!(rt
+            .block_on(app.clone().remove_account("pending".into()))
+            .is_err());
+        assert!(engine.account("pending").is_ok());
+        assert!(platform
+            .read_secret("account:pending".into())
+            .unwrap()
+            .is_some());
+    }
+    // An unresolved result does not block an explicit removal.
+    force_status(&engine, &draft, "delivery_unknown");
+    rt.block_on(app.clone().remove_account("pending".into()))
+        .unwrap();
+    assert!(engine.account("pending").is_err());
+    assert!(platform
+        .read_secret("account:pending".into())
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn account_save_keeps_oauth_tokens_and_restores_secrets_on_failure() {
+    let (_dir, engine, app, platform, _) = fixture();
+    let rt = crate::platform::runtime();
+    // A stale password field never replaces an OAuth grant.
+    let oauth = real_account("google", "gmail", "oauth");
+    let token = serde_json::json!({"accessToken":"a","refreshToken":"r","expiresAt":0}).to_string();
+    platform
+        .write_secret("account:google".into(), token.clone())
+        .unwrap();
+    rt.block_on(app.clone().save_account(oauth.clone(), "leftover".into()))
+        .unwrap();
+    assert_eq!(
+        platform
+            .read_secret("account:google".into())
+            .unwrap()
+            .unwrap(),
+        token
+    );
+    // Switching that account to password sign-in requires a password.
+    let mut switched = oauth;
+    switched.auth_kind = "password".into();
+    assert!(rt
+        .block_on(app.clone().save_account(switched.clone(), String::new()))
+        .is_err());
+    rt.block_on(app.clone().save_account(switched, "code".into()))
+        .unwrap();
+    assert_eq!(
+        platform
+            .read_secret("account:google".into())
+            .unwrap()
+            .unwrap(),
+        "code"
+    );
+    // New password accounts need a password; later edits may keep the saved one.
+    let fresh = real_account("fresh", "qq", "password");
+    assert!(rt
+        .block_on(app.clone().save_account(fresh.clone(), String::new()))
+        .is_err());
+    assert!(engine.account("fresh").is_err());
+    rt.block_on(app.clone().save_account(fresh.clone(), "first".into()))
+        .unwrap();
+    rt.block_on(app.clone().save_account(fresh.clone(), String::new()))
+        .unwrap();
+    assert_eq!(
+        platform
+            .read_secret("account:fresh".into())
+            .unwrap()
+            .unwrap(),
+        "first"
+    );
+    // A rejected account write restores the previous secret, or removes a new one.
+    let mut broken = fresh;
+    broken.address = "not-an-address".into();
+    assert!(rt
+        .block_on(app.clone().save_account(broken, "second".into()))
+        .is_err());
+    assert_eq!(
+        platform
+            .read_secret("account:fresh".into())
+            .unwrap()
+            .unwrap(),
+        "first"
+    );
+    let mut unsaved = real_account("unsaved", "custom", "password");
+    unsaved.address = "missing-at".into();
+    assert!(rt
+        .block_on(app.clone().save_account(unsaved, "pw".into()))
+        .is_err());
+    assert!(platform
+        .read_secret("account:unsaved".into())
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn oauth_refresh_does_not_overwrite_a_newer_sign_in() {
+    // A sign-in stores a new grant while the refresh request is in flight: the
+    // second read of the account entry observes it, before the write-back.
+    struct SignInDuringRefresh {
+        inner: TestPlatform,
+        reads: Mutex<u32>,
+        newer: String,
+    }
+    impl PlatformServices for SignInDuringRefresh {
+        fn read_secret(&self, key: String) -> Result<Option<String>> {
+            if key.starts_with("account:") {
+                let mut reads = self.reads.lock().unwrap();
+                *reads += 1;
+                if *reads == 2 {
+                    self.inner.write_secret(key.clone(), self.newer.clone())?;
+                }
+            }
+            self.inner.read_secret(key)
+        }
+        fn write_secret(&self, key: String, value: String) -> Result<()> {
+            self.inner.write_secret(key, value)
+        }
+        fn remove_secret(&self, key: String) -> Result<()> {
+            self.inner.remove_secret(key)
+        }
+        fn proxy_for(&self, host: String) -> Result<ProxyRoute> {
+            self.inner.proxy_for(host)
+        }
+    }
+    crate::platform::runtime().block_on(async {
+        let server = OAuthFixture::new("unused", false);
+        let directory = tempfile::tempdir().unwrap();
+        let engine = MailEngine::new(directory.path().to_string_lossy().into()).unwrap();
+        engine
+            .save_account(real_account("renewed", "gmail", "oauth"))
+            .unwrap();
+        engine
+            .set_setting("google-client-id".into(), "synthetic-client".into())
+            .unwrap();
+        let newer = serde_json::json!({
+            "accessToken": "fresh-sign-in",
+            "refreshToken": "new-grant",
+            "expiresAt": now() as f64 + 3600.0
+        })
+        .to_string();
+        let platform = Arc::new(SignInDuringRefresh {
+            inner: TestPlatform::default(),
+            reads: Mutex::new(0),
+            newer: newer.clone(),
+        });
+        let expired =
+            serde_json::json!({"accessToken":"expired","refreshToken":"old-grant","expiresAt":0});
+        platform
+            .inner
+            .write_secret("account:renewed".into(), expired.to_string())
+            .unwrap();
+        let mut app = MailApplication::new(engine, platform.clone(), Arc::new(Events::default()));
+        Arc::get_mut(&mut app).unwrap().oauth_endpoints = server.endpoints();
+        assert_eq!(app.credential("renewed").await.unwrap(), "fresh-sign-in");
+        assert_eq!(
+            platform
+                .inner
+                .read_secret("account:renewed".into())
+                .unwrap()
+                .unwrap(),
+            newer
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+    });
+}
