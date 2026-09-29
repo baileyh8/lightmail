@@ -87,6 +87,7 @@ pub struct MailDesktop {
     body_task: Option<Task<()>>,
     translation_task: Option<Task<()>>,
     search_task: Option<Task<()>>,
+    autosave_task: Option<Task<()>>,
     _events_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -173,13 +174,13 @@ impl MailDesktop {
         for key in ["to", "cc", "bcc", "subject"] {
             subscriptions.push(cx.subscribe(&fields[key], |s, _, event, cx| {
                 if matches!(event, InputEvent::Change) && s.page == Page::Compose {
-                    s.persist_compose(cx);
+                    s.schedule_autosave(cx);
                 }
             }));
         }
         subscriptions.push(cx.subscribe(&areas["draft_body"], |s, _, event, cx| {
             if matches!(event, InputEvent::Change) && s.page == Page::Compose {
-                s.persist_compose(cx);
+                s.schedule_autosave(cx);
             }
         }));
         let event_source = events.clone();
@@ -256,6 +257,7 @@ impl MailDesktop {
             body_task: None,
             translation_task: None,
             search_task: None,
+            autosave_task: None,
             _events_task: event_task,
             _subscriptions: subscriptions,
         };
@@ -575,19 +577,6 @@ impl MailDesktop {
                 return;
             }
         }
-        let targets: Vec<_> = self
-            .folders
-            .iter()
-            .filter(|f| {
-                (self.account_id.is_empty() || f.account_id == self.account_id)
-                    && (if self.folder_id.is_empty() {
-                        f.role == self.scope
-                    } else {
-                        f.id == self.folder_id
-                    })
-            })
-            .cloned()
-            .collect();
         let service = self.service.clone();
         self.status = "正在读取更早的摘要…".into();
         self.busy = true;
@@ -598,12 +587,11 @@ impl MailDesktop {
             self.search_text.clone(),
         );
         cx.spawn(async move |this, cx| {
-            let mut error = None;
-            for f in targets {
-                if let Err(e) = service.clone().sync(f.account_id, Some(f.path), true).await {
-                    error = Some(e.to_string());
-                }
-            }
+            let error = service
+                .load_older(scope.0.clone(), scope.1.clone(), scope.2.clone())
+                .await
+                .err()
+                .map(|e| e.to_string());
             let _ = this.update(cx, |s, cx| {
                 s.busy = false;
                 s.status = error.unwrap_or("已读取可用的摘要".into());
@@ -632,7 +620,21 @@ impl MailDesktop {
         self.reload();
         cx.notify();
     }
+    /// Saves the draft shortly after typing pauses, not on every keystroke.
+    pub fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+        self.autosave_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(800))
+                .await;
+            let _ = this.update(cx, |s, cx| s.save_compose_now(cx));
+        }));
+    }
+    /// Saves immediately, for example before leaving the composer.
     pub fn persist_compose(&mut self, cx: &App) {
+        self.autosave_task = None;
+        self.save_compose_now(cx);
+    }
+    fn save_compose_now(&mut self, cx: &App) {
         if self.page == Page::Compose {
             if let Some(draft) = self.compose_value(cx) {
                 match self.engine.save_draft(draft) {
@@ -762,6 +764,10 @@ impl MailDesktop {
     }
     pub fn apply_preset(&mut self, provider: String, window: &mut Window, cx: &mut Context<Self>) {
         let p = provider_preset(provider.clone());
+        // A code typed for another provider must not be saved with this one.
+        if provider != self.provider {
+            self.set("password", "", window, cx);
+        }
         self.provider = provider;
         self.oauth = p.auth_kind == "oauth";
         self.enabled = true;
@@ -793,11 +799,19 @@ impl MailDesktop {
             smtp_host: self.value("smtp", cx),
             smtp_port,
             auth_kind: if self.oauth { "oauth" } else { "password" }.into(),
-            color: "226451".into(),
+            color: self
+                .editing
+                .as_ref()
+                .map(|a| a.color.clone())
+                .unwrap_or_else(|| provider_color(&self.provider).into()),
             enabled: self.enabled,
             sent_mode: if self.append_sent { "append" } else { "server" }.into(),
         };
-        let password = self.value("password", cx);
+        let password = if self.oauth {
+            String::new()
+        } else {
+            self.value("password", cx)
+        };
         let client_id = self.value("client_id", cx);
         let client_secret = self.value("client_secret", cx);
         if self.editing.is_none() && !self.oauth && password.is_empty() {
@@ -980,6 +994,31 @@ impl MailDesktop {
             });
         })
         .detach();
+    }
+    /// Records the user's check of an interrupted submission; nothing is sent.
+    pub fn resolve_delivery(&mut self, id: String, delivered: bool, cx: &mut Context<Self>) {
+        match self.service.resolve_delivery(id, delivered) {
+            Ok(_) => {
+                self.status = if delivered {
+                    "已记录为送达".into()
+                } else {
+                    "已退回草稿，可核对后重新发送".into()
+                };
+                self.reload();
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+        cx.notify();
+    }
+    pub fn delete_draft(&mut self, id: String, cx: &mut Context<Self>) {
+        match self.engine.delete_draft(id) {
+            Ok(()) => {
+                self.status = "草稿已删除".into();
+                self.reload();
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+        cx.notify();
     }
     pub fn cancel_queue(&mut self, id: String, cx: &mut Context<Self>) {
         match self.service.cancel_queued(id) {

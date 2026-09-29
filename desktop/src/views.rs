@@ -348,35 +348,28 @@ impl MailDesktop {
     }
     fn mail_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let draft_list = ["drafts", "outbox"].contains(&self.scope.as_str());
-        let count = if draft_list {
-            self.drafts
-                .iter()
-                .filter(|d| {
-                    (self.account_id.is_empty() || d.account_id == self.account_id)
-                        && (if self.scope == "drafts" {
-                            d.status == "draft"
-                        } else {
-                            ["queued", "sending", "failed", "delivery_unknown"]
-                                .contains(&d.status.as_str())
-                        })
+        // The store's own rules decide which list a draft belongs to.
+        let listed = |d: &Draft| {
+            (self.account_id.is_empty() || d.account_id == self.account_id)
+                && DraftState::of(d).is_some_and(|state| {
+                    if self.scope == "drafts" {
+                        state == DraftState::Draft
+                    } else {
+                        state.in_outbox()
+                    }
                 })
-                .count()
+        };
+        let count = if draft_list {
+            self.drafts.iter().filter(|d| listed(d)).count()
         } else {
             self.messages.len()
         };
         let content = if draft_list {
             let mut list = column().id("draft-list").flex_1().overflow_y_scroll();
-            for draft in self.drafts.iter().filter(|d| {
-                (self.account_id.is_empty() || d.account_id == self.account_id)
-                    && (if self.scope == "drafts" {
-                        d.status == "draft"
-                    } else {
-                        ["queued", "sending", "failed", "delivery_unknown"]
-                            .contains(&d.status.as_str())
-                    })
-            }) {
+            for draft in self.drafts.iter().filter(|d| listed(d)) {
                 let d = draft.clone();
                 let id = d.id.clone();
+                let state = DraftState::of(&d);
                 let mut item =
                     column()
                         .p_4()
@@ -391,29 +384,46 @@ impl MailDesktop {
                             },
                         ))
                         .child(muted(d.to.clone()))
-                        .child(muted(match d.status.as_str() {
-                            "queued" => "等待发送 · 可撤销",
-                            "sending" => "正在提交…",
-                            "failed" => "发送失败",
-                            "delivery_unknown" => "结果待确认，请先检查服务端已发送",
+                        .child(muted(match state {
+                            Some(DraftState::Queued) => "等待发送 · 可撤销",
+                            Some(DraftState::Sending) => "正在提交…",
+                            Some(DraftState::Failed) => "发送失败",
+                            Some(DraftState::DeliveryUnknown) => {
+                                "结果待确认：请先在邮箱网页的已发送中核对"
+                            }
+                            Some(DraftState::Accepted) => "已提交",
                             _ => "本地草稿",
                         }));
-                if d.status == "draft" {
-                    item = item.child(
+                if !d.last_error.is_empty()
+                    && matches!(
+                        state,
+                        Some(DraftState::Failed | DraftState::DeliveryUnknown)
+                    )
+                {
+                    item = item.child(muted(d.last_error.clone()));
+                }
+                let mut actions = row();
+                if state.is_some_and(DraftState::editable) {
+                    let draft = d.clone();
+                    actions = actions.child(
                         Button::new(SharedString::from(format!("edit-{id}")))
                             .label("继续编辑")
                             .on_click(
-                                cx.listener(move |s, _, w, cx| s.edit_draft(d.clone(), w, cx)),
+                                cx.listener(move |s, _, w, cx| s.edit_draft(draft.clone(), w, cx)),
                             ),
                     );
-                } else if d.status == "failed" {
-                    item = item.child(
+                }
+                if state.is_some_and(DraftState::retryable) {
+                    let id = id.clone();
+                    actions = actions.child(
                         Button::new(SharedString::from(format!("retry-{id}")))
                             .label("重试发送")
                             .on_click(cx.listener(move |s, _, _, cx| s.retry_send(id.clone(), cx))),
                     );
-                } else if d.status == "queued" {
-                    item = item.child(
+                }
+                if state.is_some_and(DraftState::withdrawable) {
+                    let id = id.clone();
+                    actions = actions.child(
                         Button::new(SharedString::from(format!("undo-{id}")))
                             .label("撤销发送")
                             .on_click(
@@ -421,6 +431,39 @@ impl MailDesktop {
                             ),
                     );
                 }
+                // Only the user can settle an interrupted submission, after checking
+                // the server; neither choice sends anything.
+                if state.is_some_and(DraftState::resolvable) {
+                    let delivered = id.clone();
+                    let returned = id.clone();
+                    actions = actions
+                        .child(
+                            Button::new(SharedString::from(format!("delivered-{id}")))
+                                .label("已确认送达")
+                                .on_click(cx.listener(move |s, _, _, cx| {
+                                    s.resolve_delivery(delivered.clone(), true, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("returned-{id}")))
+                                .label("未送达，退回草稿")
+                                .on_click(cx.listener(move |s, _, _, cx| {
+                                    s.resolve_delivery(returned.clone(), false, cx)
+                                })),
+                        );
+                }
+                if state == Some(DraftState::Draft) {
+                    let id = id.clone();
+                    actions = actions.child(
+                        Button::new(SharedString::from(format!("delete-{id}")))
+                            .label("删除草稿")
+                            .ghost()
+                            .on_click(
+                                cx.listener(move |s, _, _, cx| s.delete_draft(id.clone(), cx)),
+                            ),
+                    );
+                }
+                item = item.child(actions);
                 list = list.child(item);
             }
             list.into_any_element()
@@ -1169,7 +1212,12 @@ impl MailDesktop {
                             Button::new("oauth-mode")
                                 .label("Google 登录")
                                 .selected(self.oauth)
-                                .on_click(cx.listener(|s, _, _, cx| {
+                                .on_click(cx.listener(|s, _, window, cx| {
+                                    // A password typed for app-password sign-in must not
+                                    // travel with a Google sign-in.
+                                    if !s.oauth {
+                                        s.set("password", "", window, cx);
+                                    }
                                     s.oauth = true;
                                     cx.notify();
                                 })),
