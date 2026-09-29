@@ -4,6 +4,7 @@ import json, os, subprocess, sys, time
 from pathlib import Path
 root=Path(__file__).resolve().parent.parent
 logpath=root/'validation/memory-offscreen.log'
+logpath.parent.mkdir(parents=True, exist_ok=True)
 with logpath.open('w') as log:
     child=subprocess.Popen(sys.argv[1:],stdout=log,stderr=subprocess.STDOUT,cwd=root)
     start=time.monotonic(); peak=0; sampled=False; stopped=None; samples=[]
