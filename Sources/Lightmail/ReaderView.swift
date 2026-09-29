@@ -351,13 +351,7 @@ struct SafeHTMLView: NSViewRepresentable {
     guard context.coordinator.last != html || context.coordinator.images != loadImages else { return }
     context.coordinator.last = html
     context.coordinator.images = loadImages
-    let imageSources = loadImages ? "https: http:" : "'none'"
-    let imageStyle = loadImages
-      ? ".lightmail-image-link-label{display:none!important}"
-      : "img{display:none!important}.lightmail-image-link-label{display:inline-block!important;padding:10px 16px!important;border:1px solid currentColor!important;border-radius:5px!important;font:14px -apple-system!important;color:#226451!important;background:#f2f7f5!important}"
-
-    let page =
-      "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; style-src 'unsafe-inline'; img-src \(imageSources); connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'\"><style>:root{color-scheme:light}body{font:15px -apple-system;line-height:1.65;color:#202724;margin:0;overflow-wrap:anywhere}table{max-width:100%}pre{white-space:pre-wrap}a{color:#226451}blockquote{border-left:2px solid #e7ebe8;margin-left:0;padding-left:16px}.lightmail-empty-link-label{display:inline-block!important;padding:10px 16px!important;border:1px solid currentColor!important;border-radius:5px!important;color:#226451!important;background:#f2f7f5!important}\(imageStyle)</style></head><body>\(html)</body></html>"
+    let page = readerDocument(html: html, loadImages: loadImages)
     view.loadHTMLString(page, baseURL: nil)
   }
   final class Coordinator: NSObject, WKNavigationDelegate {

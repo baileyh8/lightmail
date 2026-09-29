@@ -1,4 +1,4 @@
-name: macOS
+name: Native clients and shared core
 
 on:
   push:
@@ -10,10 +10,24 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-${{ github.ref }}
+  group: native-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  portable-core:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Shared service tests (no Swift or UI)
+        run: cargo test --locked --lib
+      - name: Headless consumer
+        run: cargo run --locked --example headless -- build/headless-demo
+      - name: TLS mail and LLM loopback acceptance
+        run: python scripts/check.py --protocols-only
   build-and-test:
     runs-on: macos-15
     timeout-minutes: 30
@@ -37,4 +51,64 @@ jobs:
           path: |
             dist/Lightmail-*-macos-arm64.zip
             dist/SHA256SUMS.txt
+          retention-days: 7
+
+  windows-desktop:
+    runs-on: windows-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Rust toolchain
+        run: rustup update stable --no-self-update
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: windows-cache
+        with:
+          path: target/release
+          key: windows-gpui-v1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-gpui-v1-
+      - name: Build native GPUI client
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: steps.windows-cache.outputs.cache-hit != 'true'
+        with:
+          path: target/release
+          key: windows-gpui-v1-${{ hashFiles('Cargo.lock') }}
+      - name: Windows credential and proxy tests
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          cargo test --locked --release -p lightmail-desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Windows platform tests failed' }
+      - name: Package installer and portable app
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          ./scripts/package-windows.ps1
+      - name: Build UI acceptance harness
+        shell: pwsh
+        run: |
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          cargo build --locked --release -p lightmail-desktop --features acceptance
+          if ($LASTEXITCODE -ne 0) { throw 'Acceptance build failed' }
+      - name: Native UI and installer acceptance
+        shell: pwsh
+        run: ./scripts/check-windows.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: windows-acceptance-evidence
+          path: |
+            build/windows-acceptance/*.png
+            build/windows-acceptance/result.json
+            build/windows-acceptance/reader-visual.json
+            build/windows-acceptance/native/*.json
+            build/windows-acceptance/native/panic.txt
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lightmail-windows-x64
+          path: |
+            dist/Lightmail-*-windows-x64*
+            dist/SHA256SUMS-windows.txt
           retention-days: 7

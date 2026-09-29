@@ -1,16 +1,20 @@
 # 架构
 
-轻邮使用原生 macOS 界面和本地邮件内核，运行时无需 Node、Python、Rust 工具链或独立后台服务。
+轻邮使用原生 macOS / Windows 界面和本地邮件内核，运行时无需 Node、Python、Rust 工具链或独立后台服务。
 
 ```mermaid
 flowchart LR
     UI[SwiftUI / AppKit] <--> FFI[UniFFI]
-    FFI <--> Core[Rust / Tokio]
+    FFI <--> Core[Rust MailApplication]
+    Windows[Windows / GPUI] <--> Core
     Core <--> DB[(SQLite)]
     Core <--> Mail[IMAP / SMTP]
-    UI <--> Keychain[macOS Keychain]
+    Core <--> Platform[PlatformServices adapter]
+    Platform <--> Keychain[OS credential vault and proxy settings]
     UI --> Reader[受限 WKWebView]
-    UI --> LLM[Chat Completions 兼容服务]
+    Windows --> WebView2[受限系统 WebView2]
+    Core --> LLM[Chat Completions 兼容服务]
+    Core --> OAuth[OAuth PKCE and token refresh]
     UI --> Translation[Apple Translation]
 ```
 
@@ -18,10 +22,27 @@ flowchart LR
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 界面与状态 | `Sources/Lightmail/` | 账号、原生列表、阅读、草稿、翻译与 Keychain |
-| 邮件内核 | `core/` | TLS 连接、IMAP、SMTP、MIME、SQLite、缓存及 HTML 清理 |
+| 界面与交互 | `Sources/Lightmail/` | 选中项、窗口、列表渲染、阅读布局、系统语言包、粘贴板及文件选择 |
+| Windows 界面 | `desktop/src/` | GPUI 视图、编辑状态、凭据/代理适配及 WebView2 宿主 |
+| 共享应用服务 | `core/application.rs` | 同步／IDLE／补偿轮询、任务生命周期、凭证刷新协调、预加载、延迟发送、翻译缓存与事件 |
+| 共享业务模块 | `core/auth.rs`、`translation.rs`、`composition.rs` | OAuth PKCE／回调／刷新、LLM HTTP／SSE／校验、回复／转发、Markdown 导出 |
+| 系统能力接口 | `core/platform.rs`、`Sources/Lightmail/CorePlatform.swift` | `PlatformServices` 提供凭证读写和代理解析；平台实现不决定同步或缓存策略 |
+| 邮件内核 | `core/{store,transport,mime,cache,html}.rs` | TLS 连接、协议、MIME、SQLite、缓存淘汰及 HTML 清理 |
 | 语言边界 | `Generated/FFI/` | UniFFI 生成的 Swift / C 接口 |
 | 校验与构建 | `scripts/`、`tests/` | 本地协议服务器、渲染检查、内存回归、打包 |
+
+## 原生客户端接入约定
+
+`MailApplication` 是业务入口。Swift 通过 UniFFI 调用；Rust／GPUI 直接使用同一个 crate。记录类型、翻译配置和错误在 Rust 定义，Swift 不再复制业务模型。`MailStore` 只保存显示状态并把服务事件投递到主线程。
+
+- 创建 `MailEngine`、平台适配器及 `ApplicationObserver`，再创建 `MailApplication`。调用 `start()` 开启监控，退出或切换数据库前调用 `stop()`；重复启动不会增加后台任务。
+- `sync`、`body`、`mark`、`move_message`、`download`、`queue`、`submit`、`translate` 都是可等待的业务命令。前台阅读不等待后台整箱同步。FFI future 取消会中止对应 Rust 工作，后台账户任务由服务统一关闭。
+- `ApplicationEvent` 发布数据变化、同步进度和发件结果；客户端负责更新显示，不根据界面是否可见决定缓存或发送状态。前后台切换只调用 `set_active`，30／120 秒轮询策略在 Rust。
+- `PlatformServices` 凭证访问必须静默；macOS 的显式授权按钮与 Keychain 对话框留在适配层。系统凭证调用使用有上限的阻塞线程池，避免占住网络执行器。OAuth 浏览器由平台打开，其余授权流程在 Rust。
+- Apple Translation 只负责语言包和系统翻译执行；分段、结果完整性验证和缓存仍复用 Rust。所有 LLM 网络请求、数字／链接保护、分批与失败判定共用一套实现。
+- `MailEngine` 保留存储查询和旧协议测试入口；新客户端不要直接使用其阻塞式网络方法，也不要再添加自己的轮询、预加载、重试或发送计时器。
+
+`examples/headless.rs` 展示不依赖 Swift、AppKit 或 GPUI 的消费端。CI 在 Windows、Linux 上运行共享核心单元测试和此示例；macOS 另运行真实 WebKit 与回环协议检查。Windows 专用 CI 构建 GPUI，运行原生窗口与 WebView2 验收，并检查安装、启动、卸载后数据保留；使用隔离示例，仍不能替代真实设备与服务商验证。
 
 ## 收件与阅读
 
@@ -45,10 +66,20 @@ flowchart LR
 
 草稿保存在本机，发送前有 5 秒撤销窗口。SMTP 接受、拒绝与结果不确定分别记录；连接在提交后中断时不会自动重复发送。
 
+计时器归 Rust 服务所有，撤销与提交通过 SQLite 状态比较互斥。取消正在提交的任务会立即保存 `delivery_unknown`；重启仍将未提交队列恢复为草稿，不自动补发。旧数据库、账户 ID 与 Keychain 键名保持兼容；共享翻译模板使用新的缓存版本，旧译文不会误当作新模板结果。
+
 LLM 翻译在用户发起后执行。正文分块带稳定 ID，长邮件分批携带相邻上下文。结束前检查段落覆盖、数字和保护片段、截断与流中断；结构校验不等于语义质量保证。译文缓存按账号、正文哈希、模型、语言及配置区分。
 
 ## 资源边界
 
 单封正文 4 MiB，转换后 8 MiB，HTML 最多 64 层 / 50,000 节点；超限明确报错。单附件下载 30 MiB，发送附件合计 25 MiB，EML 导入 30 MiB。首版没有 CID 图片渲染、附件翻译和服务器全量全文搜索。
 
-关闭窗口后进程可继续同步；`⌘Q` 完全退出后不收信，不安装常驻守护进程。
+macOS 关闭窗口后进程可继续同步；`⌘Q` 完全退出后不收信。不安装常驻守护进程。
+
+## Windows 平台边界
+
+`desktop/src/app.rs` 把交互转换成共享命令；`events.rs` 合并唤醒，避免通知无限排队。`platform.rs` 只访问 Credential Manager 和固定系统代理。界面复用一个 WebView2，禁用页面 JavaScript，默认阻止外部图片。两端正文、安全策略与导出调用共享 `presentation.rs` / `composition.rs`。
+
+关闭 Windows 窗口会停止服务并退出。安装器安装到用户目录；卸载保留邮件与草稿，移除账号在应用内确认。
+
+`third_party/gpui/LIGHTMAIL-PATCH.md` 记录 Windows 原生子窗口层级补丁：GPUI 绘图表面位于 WebView2 下方。CI 同时检查正文 DOM 和屏幕实际像素，避免内容已加载但被绘图表面遮住。

@@ -1,5 +1,6 @@
 use crate::models::{fail, Result};
-use std::{collections::HashMap, sync::Mutex, time::Duration};
+use futures_util::{stream::FuturesUnordered, StreamExt};
+use std::{collections::HashMap, net::SocketAddr, sync::Mutex, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -10,6 +11,67 @@ pub struct Proxy {
     pub kind: String,
     pub host: String,
     pub port: u16,
+}
+
+// Race address families with a short stagger. Sequential hostname dialing can
+// spend seconds on an unavailable IPv6 route before attempting working IPv4.
+async fn tcp_connect(host: &str, port: u16) -> std::io::Result<TcpStream> {
+    let mut addresses = tokio::net::lookup_host((host, port))
+        .await?
+        .collect::<Vec<_>>();
+    addresses.dedup();
+    // Preserve the resolver's first choice but try the other family second.
+    if let Some(first) = addresses.first() {
+        if let Some(other) = addresses
+            .iter()
+            .position(|address| address.is_ipv6() != first.is_ipv6())
+        {
+            let address = addresses.remove(other);
+            addresses.insert(1, address);
+        }
+    }
+    race_addresses(addresses.into_iter().take(8), |address| {
+        TcpStream::connect(address)
+    })
+    .await
+}
+
+async fn race_addresses<F, Fut>(
+    addresses: impl Iterator<Item = SocketAddr>,
+    connect: F,
+) -> std::io::Result<TcpStream>
+where
+    F: Fn(SocketAddr) -> Fut + Copy,
+    Fut: std::future::Future<Output = std::io::Result<TcpStream>>,
+{
+    let mut attempts = FuturesUnordered::new();
+    for (index, address) in addresses.enumerate() {
+        attempts.push(async move {
+            if index > 0 {
+                tokio::time::sleep(Duration::from_millis(200 * index as u64)).await;
+            }
+            connect(address).await
+        });
+    }
+    let work = async {
+        let mut error =
+            std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "No resolved address");
+        while let Some(result) = attempts.next().await {
+            match result {
+                Ok(stream) => {
+                    stream.set_nodelay(true)?;
+                    return Ok(stream);
+                }
+                Err(e) => error = e,
+            }
+        }
+        Err(error)
+    };
+    tokio::time::timeout(Duration::from_secs(20), work)
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP connection timed out")
+        })?
 }
 
 #[derive(Default)]
@@ -57,11 +119,11 @@ pub async fn connect(host: &str, port: u16, proxy: Option<&Proxy>) -> Result<Tcp
         return Err(fail("邮箱服务器地址无效"));
     }
     let Some(proxy) = proxy else {
-        return TcpStream::connect((host, port))
+        return tcp_connect(host, port)
             .await
             .map_err(|_| fail("无法连接邮件服务器，请检查网络和地址"));
     };
-    let mut stream = TcpStream::connect((proxy.host.as_str(), proxy.port))
+    let mut stream = tcp_connect(proxy.host.as_str(), proxy.port)
         .await
         .map_err(|_| fail("无法连接系统代理，请检查代理是否运行"))?;
     let tunnel_error = |_| fail("系统代理连接中断，请检查网络");
@@ -158,6 +220,46 @@ impl Drop for SmtpTunnel {
 
 #[cfg(test)]
 mod diagnostics {
+    #[test]
+    fn stalled_address_does_not_delay_working_family() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let destination = listener.local_addr().unwrap();
+            let stalled =
+                std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), destination.port());
+            let dropped = std::sync::atomic::AtomicBool::new(false);
+            struct Cancel<'a>(&'a std::sync::atomic::AtomicBool);
+            impl Drop for Cancel<'_> {
+                fn drop(&mut self) {
+                    self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let connect = |address: std::net::SocketAddr| {
+                let dropped = &dropped;
+                async move {
+                    if address.is_ipv6() {
+                        let _cancel = Cancel(dropped);
+                        std::future::pending::<()>().await;
+                    }
+                    tokio::net::TcpStream::connect(address).await
+                }
+            };
+            let stream = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                super::race_addresses([stalled, destination].into_iter(), connect),
+            )
+            .await
+            .expect("working IPv4 must not wait for stalled IPv6")
+            .unwrap();
+            assert_eq!(stream.peer_addr().unwrap(), destination);
+            assert!(
+                dropped.load(std::sync::atomic::Ordering::SeqCst),
+                "losing connection future must be canceled"
+            );
+        });
+    }
     #[test]
     #[ignore = "explicit, no-auth live TLS diagnostic only"]
     fn live_mail_proxy_tls() {

@@ -2,16 +2,16 @@
   <img src="docs/screenshots/app-icon.png" width="96" height="96" alt="轻邮图标">
   <h1>轻邮 · Lightmail</h1>
   <p><strong>多个邮箱，一处清爽。</strong></p>
-  <p>为 Mac 打造的轻量本地邮箱客户端。聚合收发、专注阅读、全文翻译、一键 Markdown。</p>
-  <p>A lightweight, native macOS email client. Multiple inboxes. One quiet workspace.</p>
+  <p>为 macOS 和 Windows 打造的轻量本地邮箱客户端。聚合收发、专注阅读、全文翻译、一键 Markdown。</p>
+  <p>A lightweight, native macOS and Windows email client. Multiple inboxes. One quiet workspace.</p>
   <p>
-    <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.3"><img src="https://img.shields.io/badge/version-v0.0.3-226451?style=flat-square" alt="v0.0.3"></a>
+    <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.4"><img src="https://img.shields.io/badge/version-v0.0.4-226451?style=flat-square" alt="v0.0.4"></a>
     <img src="https://img.shields.io/badge/macOS-15%2B-363d3a?style=flat-square" alt="macOS 15+">
     <img src="https://img.shields.io/badge/Apple_Silicon-arm64-363d3a?style=flat-square" alt="Apple Silicon">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-226451?style=flat-square" alt="GPL-3.0-or-later"></a>
-    <a href="https://github.com/baileyh8/lightmail/actions/workflows/ci.yml"><img src="https://github.com/baileyh8/lightmail/actions/workflows/ci.yml/badge.svg" alt="macOS build and tests"></a>
+    <a href="https://github.com/baileyh8/lightmail/actions/workflows/ci.yml"><img src="https://github.com/baileyh8/lightmail/actions/workflows/ci.yml/badge.svg" alt="Native clients and shared core tests"></a>
   </p>
-  <p><a href="https://lightmail.sohym.com">官网</a> · <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.3">下载预览版</a> · <a href="docs/getting-started.md">使用指南</a> · <a href="https://github.com/baileyh8/lightmail/issues">反馈问题</a></p>
+  <p><a href="https://lightmail.sohym.com">官网</a> · <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.4">下载预览版</a> · <a href="docs/getting-started.md">使用指南</a> · <a href="https://github.com/baileyh8/lightmail/issues">反馈问题</a></p>
 </div>
 
 ![轻邮：聚合收件箱与原文阅读](docs/screenshots/inbox.png)
@@ -38,9 +38,11 @@
 
 </details>
 
-## 从 v0.0.3 开始
+## 从 v0.0.4 开始
 
-**需要 Apple Silicon Mac 和 macOS 15+。** 从 [Releases](https://github.com/baileyh8/lightmail/releases/tag/v0.0.3) 下载 ZIP，解压并将 `轻邮.app` 放入 Applications。运行应用不需要额外安装 Node、Python 或 Rust。
+**需要 Apple Silicon Mac 和 macOS 15+。** 从 [Releases](https://github.com/baileyh8/lightmail/releases/tag/v0.0.4) 下载 ZIP，解压并将 `轻邮.app` 放入 Applications。运行应用不需要额外安装 Node、Python 或 Rust。
+
+**Windows 10 / 11 x64**：下载 `windows-x64-setup.exe` 按用户安装，或解压 `windows-x64.zip` 直接运行 `Lightmail.exe`。需要 Microsoft Edge WebView2 Runtime；安装包尚未代码签名。卸载保留邮件、草稿与设置。
 
 > 这是早期预览版，当前使用 ad-hoc 签名，尚未做 Apple Developer ID 公证。macOS 可能阻止首次打开；请核对下载来源和 SHA-256，或选择从源码构建。Intel 尚未验证。
 
@@ -84,15 +86,17 @@ Gmail OAuth 需配置你自己的 Desktop Client ID；仓库与安装包不附�
 
 ## 轻量，是具体的设计
 
-- **原生界面**：SwiftUI + AppKit；HTML 阅读使用系统 WKWebView，不捆绑浏览器运行时。
-- **本地内核**：Rust / Tokio 处理邮件连接与解析，SQLite 保存摘要、草稿与缓存。
+- **原生界面**：macOS 使用 SwiftUI / AppKit + WKWebView；Windows 使用 GPUI + 系统 WebView2，沿用同一套三栏设计。
+- **共享业务核心**：Rust / Tokio 统一处理同步调度、预加载、OAuth、发送队列、LLM 翻译与 Markdown 导出；SQLite 保存摘要、草稿与缓存。
 - **每账号 20 封**：优先预加载最新邮件；旧信摘要保留，正文按需临时读取。
-- **凭证分开保存**：密码、OAuth token 和 API Key 使用 macOS Keychain。
+- **凭证分开保存**：密码、OAuth token 和 API Key 使用 macOS Keychain 或 Windows 凭据管理器。
 - **有界处理**：限制正文大小与 HTML 复杂度，包含 500 次嵌套邮件阅读回归检查。
 
 [架构与缓存机制](docs/architecture.md) · [隐私与安全](SECURITY.md)
 
 ## 从源码构建
+
+### macOS
 
 开发环境：Apple Command Line Tools、Swift 6+、Rust stable、Python 3。
 
@@ -113,7 +117,33 @@ python3 scripts/check.py
 
 可选：`python3 scripts/check.py --benchmark` 运行大数据集查询基准。拥有签名证书的开发者可通过 `LIGHTMAIL_SIGNING_IDENTITY` 指定构建身份。
 
+### Windows
+
+需要 Windows 10 / 11 x64、Visual Studio C++ Build Tools（含 Windows SDK）、Rust stable 和系统 WebView2 Runtime。
+
+```powershell
+./scripts/build-windows.ps1
+cargo test --locked --release -p lightmail-desktop
+# 安装 Inno Setup 6 后可打包安装程序与便携 ZIP
+./scripts/package-windows.ps1
+```
+
+产物：`target/release/Lightmail.exe`。隔离示例：`Lightmail.exe --demo`。Windows 使用 LLM 翻译，不提供 Apple 系统翻译；支持固定 HTTP / SOCKS 系统代理，暂不支持 PAC。
+
+### 共享核心
+
+只开发共享核心，无需界面工具链：
+
+```sh
+cargo test --locked --lib
+cargo run --locked --example headless -- build/headless-demo
+```
+
+原生前端通过 `MailApplication` 调用同一套业务命令，实现 `PlatformServices` 对接系统凭证与代理，再订阅 `ApplicationObserver` 更新界面。`desktop/` 是直接复用此 API 的 Windows GPUI 客户端，示例只使用虚构邮件。详见[客户端接入约定](docs/architecture.md#原生客户端接入约定)。
+
 ## 快捷键
+
+Windows 对应使用 `Ctrl` 替代 `⌘`；`Esc` 返回阅读页。
 
 | 操作 | 快捷键 | 操作 | 快捷键 |
 |---|---|---|---|
@@ -123,6 +153,8 @@ python3 scripts/check.py
 | 设置 | `⌘,` | 导入 EML | `⌘O` |
 
 ## 当前边界
+
+Windows 自动验收覆盖 CI 构建、凭据存取、原生窗口、WebView2 和安装/卸载。尚无 Windows 真机人工验收，自动检查不代表所有显卡、DPI 和服务商环境已验证。
 
 Gmail 已完成真实多账号登录、正文阅读与缓存验证；QQ 已验证真实账号收件同步、正文阅读与 20 封缓存。163 提供接入预设，QQ / 163 的真实发件验证仍待覆盖。协议样例通过不代表所有服务商都已验证，也不代表真实投递到达或所有模型的翻译质量。
 

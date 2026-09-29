@@ -77,3 +77,50 @@ enum ReaderRenderingTests {
     } catch { print("FAIL reader: \(userError(error))"); exit(1) }
   }
 }
+
+extension ReaderRenderingTests {
+  // Uses an isolated database copy prepared by the developer, never the live store.
+  // Only aggregate results are printed; no subjects, addresses, body text or links.
+  @MainActor static func runCached(directory: String) {
+    do {
+      let root = URL(fileURLWithPath: directory)
+      guard FileManager.default.fileExists(atPath: root.appendingPathComponent("ISOLATED_COPY").path) else {
+        throw MailAppError.message("Expected an explicitly isolated cache copy")
+      }
+      let engine = try MailEngine(directory: root.path)
+      guard try engine.accounts().allSatisfy({ !$0.enabled && $0.provider == "local" }) else {
+        throw MailAppError.message("Cache acceptance must have all network accounts disabled")
+      }
+      let rows = try engine.listMessages(query: MessageQuery(accountId: "", folderId: "", scope: "all", search: "", unreadOnly: false, limit: 500, offset: 0))
+      let bodies = try rows.compactMap { try engine.cachedBody(messageId: $0.id) }.filter { !$0.html.isEmpty }.prefix(6)
+      guard !bodies.isEmpty else { throw MailAppError.message("No cached HTML samples") }
+      func findWeb(_ view: NSView) -> WKWebView? {
+        if let web = view as? WKWebView { return web }
+        return view.subviews.lazy.compactMap { findWeb($0) }.first
+      }
+      var count = 0
+      for body in bodies {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
+        let host = NSHostingView(rootView: SafeHTMLView(html: body.html))
+        window.contentView = host; host.layoutSubtreeIfNeeded()
+        var web: WKWebView?
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+          RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+          web = findWeb(host)
+          if let web, web.url != nil, !web.isLoading { break }
+        }
+        guard let web else { throw MailAppError.message("Cached reader did not start") }
+        var done = false, valid = false
+        web.evaluateJavaScript("document.body.innerText.trim().length > 0 && document.body.scrollHeight > 0 && document.querySelector('meta[http-equiv]').content.includes(\"img-src 'none'\")") { result, error in
+          valid = error == nil && result as? Bool == true; done = true
+        }
+        let finish = Date().addingTimeInterval(5)
+        while !done && Date() < finish { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        guard valid else { throw MailAppError.message("Cached reader sample failed") }
+        web.stopLoading(); window.contentView = nil; window.close(); count += 1
+      }
+      print("Private cached reader: \(count) HTML samples passed; isolated copy, images blocked, no mailbox network access")
+    } catch { print("Private cached reader failed (details omitted)"); exit(1) }
+  }
+}

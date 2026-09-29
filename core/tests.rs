@@ -281,6 +281,81 @@ fn local_protocol_integration() {
     assert!(e
         .send_draft("unknown".into(), "fixture-only".into())
         .is_err());
+    // Exercise the frontend-facing service using the same TLS fixtures, without
+    // Swift, Keychain or a graphical event loop.
+    let platform = std::sync::Arc::new(crate::application_tests::TestPlatform::default());
+    platform
+        .secrets
+        .lock()
+        .unwrap()
+        .insert("account:fixture".into(), "fixture-only".into());
+    if proxy_kind != "direct" {
+        *platform.route.lock().unwrap() = Some(crate::ProxyRoute {
+            kind: proxy_kind.clone(),
+            host: "127.0.0.1".into(),
+            port: ports[&proxy_kind].as_u64().unwrap() as u16,
+        });
+    }
+    let events = std::sync::Arc::new(crate::application_tests::Events::default());
+    let app = crate::MailApplication::new(e.clone(), platform, events.clone());
+    e.runtime
+        .block_on(
+            app.clone()
+                .sync("fixture".into(), Some("INBOX".into()), false),
+        )
+        .unwrap();
+    e.clear_body_cache().unwrap();
+    let sync_guard = e.runtime.block_on(sync_slot.lock());
+    let body = e.runtime.block_on(app.clone().body(m.id.clone())).unwrap();
+    drop(sync_guard);
+    assert!(body.markdown.contains("12.50"));
+    let mut queued = draft("service-send");
+    queued.account_id = "fixture".into();
+    e.runtime.block_on(app.clone().queue(queued)).unwrap();
+    // This waits for the Rust-owned undo timer; no frontend tick submits it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(9);
+    while std::time::Instant::now() < deadline
+        && e.drafts()
+            .unwrap()
+            .iter()
+            .any(|d| d.id == "service-send" && d.status != "accepted")
+    {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        e.drafts()
+            .unwrap()
+            .iter()
+            .find(|d| d.id == "service-send")
+            .unwrap()
+            .status,
+        "accepted"
+    );
+    assert!(e
+        .runtime
+        .block_on(app.clone().submit("service-send".into()))
+        .is_err());
+    assert_eq!(state()["smtp_accepted"], 2);
+    app.clone().start().unwrap();
+    app.clone().start().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    app.stop();
+    let weak = std::sync::Arc::downgrade(&app);
+    drop(app);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while weak.upgrade().is_some() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        weak.upgrade().is_none(),
+        "stopped service retained by workers"
+    );
+    assert!(events
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| matches!(e.kind, crate::ApplicationEventKind::SyncFinished)));
     if proxy_kind != "direct" {
         assert!(state()["proxy_connects"].as_u64().unwrap() >= 5);
     } else {
@@ -635,10 +710,13 @@ fn cached_previews_survive_header_refresh_aliases_and_restart() {
     assert_eq!(e.message(&alias.id).unwrap().snippet, expected);
     assert!(e.cached_body(message.id).unwrap().is_some());
     // A later header rebuild can lose previews even after the migration ran.
-    e.connection().unwrap().execute(
-        "UPDATE messages SET data=json_set(data,'$.snippet','') WHERE canonical_id=?1",
-        [&message.canonical_id],
-    ).unwrap();
+    e.connection()
+        .unwrap()
+        .execute(
+            "UPDATE messages SET data=json_set(data,'$.snippet','') WHERE canonical_id=?1",
+            [&message.canonical_id],
+        )
+        .unwrap();
     drop(e);
     let e = MailEngine::new(dir.path().to_string_lossy().into()).unwrap();
     assert_eq!(e.message(&alias.id).unwrap().snippet, expected);
@@ -657,9 +735,13 @@ fn rebuilt_headers_recover_previews_from_existing_body_cache() {
     let expected = message.snippet.clone();
     assert!(!expected.is_empty());
     // UID/label rediscovery can recreate header rows while the canonical body survives.
-    e.connection().unwrap().execute(
-        "DELETE FROM messages WHERE canonical_id=?1", [&message.canonical_id],
-    ).unwrap();
+    e.connection()
+        .unwrap()
+        .execute(
+            "DELETE FROM messages WHERE canonical_id=?1",
+            [&message.canonical_id],
+        )
+        .unwrap();
     message.snippet.clear();
     MailEngine::put_message(&e.connection().unwrap(), &message).unwrap();
     assert_eq!(e.message(&message.id).unwrap().snippet, expected);
@@ -674,10 +756,13 @@ fn preload_cache_hit_repairs_empty_alias_previews_without_network() {
     let mut alias = message.clone();
     alias.id = "cached-preview-alias".into();
     MailEngine::put_message(&e.connection().unwrap(), &alias).unwrap();
-    e.connection().unwrap().execute(
-        "UPDATE messages SET data=json_set(data,'$.snippet','') WHERE canonical_id=?1",
-        [&message.canonical_id],
-    ).unwrap();
+    e.connection()
+        .unwrap()
+        .execute(
+            "UPDATE messages SET data=json_set(data,'$.snippet','') WHERE canonical_id=?1",
+            [&message.canonical_id],
+        )
+        .unwrap();
     let count = e.storage_info().unwrap().body_count;
     e.preload_body(message.id.clone(), String::new()).unwrap();
     assert_eq!(e.message(&message.id).unwrap().snippet, expected);

@@ -19,6 +19,10 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
   @StateObject private var store = MailStore()
   init() {
     MemoryTests.startDiagnosticGuard()
+    if let i = CommandLine.arguments.firstIndex(of: "--cached-reader-test"), CommandLine.arguments.count > i + 1 {
+      ReaderRenderingTests.runCached(directory: CommandLine.arguments[i + 1])
+      exit(0)
+    }
     if let i = CommandLine.arguments.firstIndex(of: "--render-test"), CommandLine.arguments.count > i + 1 {
       ReaderRenderingTests.run(directory: CommandLine.arguments[i + 1])
       exit(0)
@@ -46,6 +50,9 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
         .onReceive(
           NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
         ) { _ in store.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in store.setActive(true) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in store.setActive(false) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.application.stop() }
     }
     .windowStyle(.hiddenTitleBar)
     .defaultSize(width: 1440, height: 920)
