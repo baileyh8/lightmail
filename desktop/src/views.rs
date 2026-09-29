@@ -723,9 +723,11 @@ impl MailDesktop {
             })
             .child(
                 row()
+                    .relative()
                     .p_3()
                     .border_t_1()
                     .border_color(rgb(LINE))
+                    .child(probe_marker("list-footer".into(), cx))
                     .child(muted("最近邮件 · 正文按需读取").text_size(px(10.)))
                     .child(div().flex_1())
                     .when(self.page_offset > 0, |v| {

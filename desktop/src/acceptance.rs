@@ -248,6 +248,52 @@ async fn overlay_margin(
     }
     Ok(())
 }
+/// Opens the listed messages in turn, as a user would, and reports progress
+/// so a collector can chart the working set per read; then idles for 30 s.
+async fn soak(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    path: &std::path::Path,
+    reads: usize,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    // Only rows shown in full: the list footer covers part of the last one.
+    let rows: Vec<usize> = handle.update(cx, |_, _, cx| {
+        let s = view.read(cx);
+        let footer = s.probes.get("list-footer").map(|b| b.top());
+        (0..s.messages.len())
+            .filter(|i| {
+                s.probes
+                    .get(&format!("message-{i}"))
+                    .is_some_and(|b| footer.is_none_or(|top| b.bottom() <= top))
+            })
+            .collect()
+    })?;
+    anyhow::ensure!(!rows.is_empty(), "No fully visible messages to read");
+    for read in 0..reads {
+        let index = rows[read % rows.len()];
+        let id = handle.update(cx, |_, _, cx| view.read(cx).messages[index].id.clone())?;
+        click(view, handle, &format!("message-{index}"), true, cx)?;
+        let mut loaded = false;
+        for _ in 0..40 {
+            pause(cx).await;
+            loaded = handle.update(cx, |_, _, cx| {
+                let s = view.read(cx);
+                s.selected.as_ref().is_some_and(|m| m.id == id) && s.body.is_some() && !s.loading
+            })?;
+            if loaded {
+                break;
+            }
+        }
+        anyhow::ensure!(loaded, "Read {read} did not open message {index}");
+        let progress = serde_json::json!({ "read": read + 1, "of": reads });
+        std::fs::write(path.join("soak-progress.json"), progress.to_string())?;
+    }
+    for _ in 0..120 {
+        pause(cx).await;
+    }
+    Ok(())
+}
 // The native reader has no script engine or DOM: checks read the prepared
 // document and the exact image and link policy the view renders with.
 fn document_text(view: &Entity<MailDesktop>, cx: &App) -> Option<String> {
@@ -337,7 +383,10 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Same body is rendered repeatedly to exercise renderer reuse, not just conversion.
             for i in 0..60 {handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{s.page=Page::Mail;s.mode=ExportMode::Original;s.reader_dirty=true;s.record(&format!("reader-cycle-{i}"));cx.notify();}))?;pause(cx).await;}
             let platform=Arc::new(DesktopPlatform::default());let key=format!("acceptance:{}",uuid::Uuid::new_v4());platform.write_secret(key.clone(),"synthetic-only".into())?;anyhow::ensure!(platform.read_secret(key.clone())?.as_deref()==Some("synthetic-only"),"Vault roundtrip");platform.remove_secret(key)?;
-            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"checks":["native-window","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
+            // Opt-in long run for the memory curve; synthetic demo mail only.
+            let reads=std::env::var("LIGHTMAIL_SOAK_READS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0);
+            if reads>0 {soak(&view,handle,&path,reads,cx).await?;}
+            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
         }.await;
         let report=match result{Ok(v)=>v,Err(e)=>serde_json::json!({"passed":false,"error":format!("{e:#}")})};
         let _=std::fs::create_dir_all(&path);let _=std::fs::write(path.join("native-acceptance.json"),report.to_string());
