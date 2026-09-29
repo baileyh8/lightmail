@@ -76,12 +76,14 @@ fn main() {
                 px(800.).min(screen.height - px(80.)),
             );
             let bounds = Bounds::centered(None, initial_size, cx);
+            #[cfg(windows)]
+            let bounds = platform::initial_window_bounds().unwrap_or(bounds);
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(
-                        px(1040.).min(initial_size.width),
-                        px(640.).min(initial_size.height),
+                        px(1040.).min(bounds.size.width),
+                        px(640.).min(bounds.size.height),
                     )),
                     ..Default::default()
                 },

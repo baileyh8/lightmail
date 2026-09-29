@@ -2722,6 +2722,8 @@ License: `Apache-2.0`
 
 Source: https://crates.io/crates/gpui/0.2.2
 
+Local compatibility patch: [third_party/gpui/PATCHES.md](third_party/gpui/PATCHES.md).
+
 - [LICENSE-APACHE](#license-text-0166)
 
 

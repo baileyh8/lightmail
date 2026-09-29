@@ -11,6 +11,39 @@ pub struct DesktopPlatform {
     #[cfg(not(windows))]
     preview_secrets: Mutex<HashMap<String, String>>,
 }
+
+#[cfg(windows)]
+pub fn initial_window_bounds() -> Option<gpui::Bounds<gpui::Pixels>> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn SystemParametersInfoW(action: u32, param: u32, value: *mut Rect, flags: u32) -> i32;
+        fn GetDpiForSystem() -> u32;
+    }
+    let mut area = Rect::default();
+    if unsafe { SystemParametersInfoW(0x0030, 0, &mut area, 0) } == 0 {
+        return None;
+    }
+    let scale = (unsafe { GetDpiForSystem() } as f32 / 96.).max(1.);
+    let width = (area.right - area.left) as f32 / scale;
+    let height = (area.bottom - area.top) as f32 / scale;
+    let size = gpui::size(
+        gpui::px(1280f32.min(width - 32.)),
+        gpui::px(800f32.min(height - 64.)),
+    );
+    let origin = gpui::point(
+        gpui::px(area.left as f32 / scale + (width - f32::from(size.width)) / 2.),
+        gpui::px(area.top as f32 / scale + (height - f32::from(size.height) - 32.) / 2.),
+    );
+    Some(gpui::Bounds::new(origin, size))
+}
 impl PlatformServices for DesktopPlatform {
     fn read_secret(&self, key: String) -> Result<Option<String>> {
         #[cfg(windows)]

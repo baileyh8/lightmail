@@ -920,7 +920,12 @@ impl MailDesktop {
                     )
                     .into_any_element()
             } else if let Some(reader) = &self.reader {
-                div().size_full().child(reader.clone()).into_any_element()
+                div()
+                    .relative()
+                    .size_full()
+                    .child(reader.clone())
+                    .child(probe_marker("reader-viewport".into(), cx))
+                    .into_any_element()
             } else {
                 column()
                     .p_7()

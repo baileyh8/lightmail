@@ -81,3 +81,5 @@ macOS 关闭窗口后进程可继续同步；`⌘Q` 完全退出后不收信。�
 `desktop/src/app.rs` 把交互转换成共享命令；`events.rs` 合并唤醒，避免通知无限排队。`platform.rs` 只访问 Credential Manager 和固定系统代理。界面复用一个 WebView2，禁用页面 JavaScript，默认阻止外部图片。两端正文、安全策略与导出调用共享 `presentation.rs` / `composition.rs`。
 
 关闭 Windows 窗口会停止服务并退出。安装器安装到用户目录；卸载保留邮件与草稿，移除账号在应用内确认。
+
+`third_party/gpui/LIGHTMAIL-PATCH.md` 记录 Windows 原生子窗口层级补丁：GPUI 绘图表面位于 WebView2 下方。CI 同时检查正文 DOM 和屏幕实际像素，避免内容已加载但被绘图表面遮住。

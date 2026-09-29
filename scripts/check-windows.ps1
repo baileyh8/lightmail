@@ -8,14 +8,18 @@ using System;
 using System.Runtime.InteropServices;
 public static class WindowCapture {
  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+ [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out Rect r);
+ [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref Point p);
+ [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out Rect r, int size);
+ public static bool Frame(IntPtr h, out Rect r) { return DwmGetWindowAttribute(h, 9, out r, 16) == 0 || GetWindowRect(h, out r); }
 }
 '@
 function Capture($process, $name) {
     $process.Refresh()
     if ($process.MainWindowHandle -eq [IntPtr]::Zero) { return }
     $rect = New-Object WindowCapture+Rect
-    if (-not [WindowCapture]::GetWindowRect($process.MainWindowHandle, [ref]$rect)) { return }
+    if (-not [WindowCapture]::Frame($process.MainWindowHandle, [ref]$rect)) { return }
     $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
     if ($width -le 0 -or $height -le 0) { return }
     $bitmap = New-Object System.Drawing.Bitmap($width, $height)
@@ -24,6 +28,26 @@ function Capture($process, $name) {
         $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
         $bitmap.Save((Join-Path $root "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
+}
+function CheckReaderPixels($process, $name, $report) {
+    $geometry = Get-Content "$report/reader-geometry.json" -Raw | ConvertFrom-Json
+    $origin = New-Object WindowCapture+Point; $rect = New-Object WindowCapture+Rect
+    if (-not [WindowCapture]::ClientToScreen($process.MainWindowHandle, [ref]$origin) -or -not [WindowCapture]::Frame($process.MainWindowHandle, [ref]$rect)) { throw 'Reader screen bounds unavailable' }
+    $bitmap = [System.Drawing.Bitmap]::new((Join-Path $root "$name.png"))
+    try {
+        $left = [int]($origin.X - $rect.Left + $geometry.x * $geometry.scale) + 8
+        $top = [int]($origin.Y - $rect.Top + $geometry.y * $geometry.scale) + 8
+        $right = [int]($left + $geometry.width * $geometry.scale) - 16
+        $bottom = [int]($top + [Math]::Min(200, $geometry.height - 16) * $geometry.scale)
+        if ($left -lt 0 -or $top -lt 0 -or $right -ge $bitmap.Width -or $bottom -ge $bitmap.Height -or $bottom -le $top) { throw 'Reader pixel region is outside the captured window' }
+        $dark = 0
+        for ($y = $top; $y -lt $bottom; $y += 2) { for ($x = $left; $x -lt $right; $x += 2) {
+            $pixel = $bitmap.GetPixel($x, $y)
+            if ($pixel.R -lt 180 -and $pixel.G -lt 180 -and $pixel.B -lt 180) { $dark++ }
+        } }
+        @{ darkSamples = $dark; region = @($left,$top,$right,$bottom); passed = ($dark -gt 100) } | ConvertTo-Json | Set-Content "$root/reader-visual.json"
+        if ($dark -le 100) { throw "Reader DOM loaded but native pixels are blank: $dark dark samples" }
+    } finally { $bitmap.Dispose() }
 }
 if (-not $InstallerOnly) {
     $data = Join-Path $root 'native-data'; $report = Join-Path $root 'native'
@@ -52,6 +76,7 @@ if (-not $InstallerOnly) {
                 if ($name -notmatch '^[a-z0-9-]+$') { throw 'Invalid screenshot name' }
                 Capture $process $name
                 if (-not (Test-Path "$root/$name.png")) { throw "Could not capture $name" }
+                if ($name -eq 'windows-inbox') { CheckReaderPixels $process $name $report }
                 Remove-Item "$report/screenshot-request.txt"
                 Set-Content "$report/$name.captured" 'done'
             }
@@ -63,7 +88,8 @@ if (-not $InstallerOnly) {
         if ($process.ExitCode -ne 0) { throw "Native acceptance exited $($process.ExitCode)" }
         $result = Get-Content "$report/native-acceptance.json" -Raw | ConvertFrom-Json
         if (-not $result.passed) { throw "Native acceptance failed: $($result.error)" }
-        @{ peakAppWorkingSetMiB = [Math]::Round($peak / 1MB, 2); peakProcessTreeWorkingSetMiB = [Math]::Round($treePeak / 1MB, 2); checks = $result.checks; passed = $true; boundary = 'Process tree sums app and descendant WebView2 working sets, potentially counting shared pages twice; dedicated GPU memory excluded' } | ConvertTo-Json | Set-Content "$root/result.json"
+        $checks = @($result.checks) + @('reader-visible-pixels')
+        @{ peakAppWorkingSetMiB = [Math]::Round($peak / 1MB, 2); peakProcessTreeWorkingSetMiB = [Math]::Round($treePeak / 1MB, 2); checks = $checks; passed = $true; boundary = 'Process tree sums app and descendant WebView2 working sets, potentially counting shared pages twice; dedicated GPU memory excluded' } | ConvertTo-Json | Set-Content "$root/result.json"
         Write-Output "Native UI: $($result.checks.Count) checks passed; app peak $([Math]::Round($peak / 1MB, 2)) MiB"
     } finally { if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force } }
 }

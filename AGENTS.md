@@ -11,7 +11,7 @@ Lightmail pairs a native macOS/Windows interfaces with shared Rust services thro
 - `Generated/FFI/` and `Sources/Lightmail/Generated/`: generated bindings; regenerate rather than edit manually.
 - `tests/`, `scripts/`: Python protocol fixtures, builds, validation, and packaging.
 - `Resources/`, `docs/`: assets, architecture, screenshots, and release notes.
-- `third_party/imap-proto/`: vendored compatibility patch; preserve licenses.
+- `third_party/`: vendored IMAP/GPUI compatibility patches; preserve licenses.
 
 ## Build, Test, and Development Commands
 

@@ -53,6 +53,7 @@ tempfile = "3"
 
 [patch.crates-io]
 imap-proto = { path = "third_party/imap-proto" }
+gpui = { path = "third_party/gpui" }
 
 [profile.release]
 opt-level = "s"

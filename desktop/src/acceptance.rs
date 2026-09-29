@@ -132,6 +132,11 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             let document:serde_json::Value=serde_json::from_str(document.as_str().ok_or_else(||anyhow::anyhow!("Reader JSON"))?)?;
             anyhow::ensure!(document["text"].as_str().is_some_and(|s|s.contains("final review")),"Body text absent");
             anyhow::ensure!(document["csp"].as_str().is_some_and(|s|s.contains("img-src 'none'")),"Remote images not blocked");
+            handle.update(cx,|_,window,cx| {
+                let b = view.read(cx).probes["reader-viewport"];
+                let geometry = serde_json::json!({"x":f32::from(b.left()),"y":f32::from(b.top()),"width":f32::from(b.size.width),"height":f32::from(b.size.height),"scale":window.scale_factor()});
+                std::fs::write(path.join("reader-geometry.json"), geometry.to_string())
+            })??;
             screenshot(&path,"windows-inbox",cx).await?;
             click(&view,handle,"copy-markdown",false,cx)?;pause(cx).await;
             handle.update(cx,|_,_,cx|{anyhow::ensure!(cx.read_from_clipboard().and_then(|v|v.text()).is_some_and(|s|s.contains("final review")),"Markdown clipboard missing");Ok::<_,anyhow::Error>(())})??;
