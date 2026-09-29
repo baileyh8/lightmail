@@ -412,6 +412,9 @@ impl OAuthFixture {
                     std::thread::sleep(Duration::from_millis(5));
                     continue;
                 };
+                // Windows sockets accepted from a nonblocking listener stay nonblocking,
+                // so a read before the request arrives would fail with WouldBlock.
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
@@ -469,7 +472,11 @@ impl OAuthFixture {
 impl Drop for OAuthFixture {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        self.worker.take().unwrap().join().unwrap();
+        let result = self.worker.take().unwrap().join();
+        // A second panic while a failed test unwinds would abort the whole test binary.
+        if !std::thread::panicking() {
+            result.unwrap();
+        }
     }
 }
 
