@@ -1,7 +1,6 @@
 Lightmail for Windows (x64)
 
-Requires Windows 10 1809 / Windows 11 and Microsoft Edge WebView2 Runtime.
-WebView2: https://developer.microsoft.com/microsoft-edge/webview2/
+Requires Windows 10 1809 / Windows 11. No WebView2 or other runtime is needed.
 Source, support and configuration: https://github.com/baileyh8/lightmail
 License: GPL-3.0-or-later. See LICENSE and THIRD_PARTY_NOTICES.md.
 

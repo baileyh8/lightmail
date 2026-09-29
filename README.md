@@ -86,7 +86,7 @@ Gmail OAuth 需配置你自己的 Desktop Client ID；仓库与安装包不附�
 
 ## 轻量，是具体的设计
 
-- **原生界面**：macOS 使用 SwiftUI / AppKit + WKWebView；Windows 使用 GPUI + 系统 WebView2，沿用同一套三栏设计。
+- **原生界面**：macOS 使用 SwiftUI / AppKit + WKWebView；Windows 使用 GPUI Kit 原生绘制，阅读器不嵌入浏览器，沿用同一套三栏设计。
 - **共享业务核心**：Rust / Tokio 统一处理同步调度、预加载、OAuth、发送队列、LLM 翻译与 Markdown 导出；SQLite 保存摘要、草稿与缓存。
 - **每账号 20 封**：优先预加载最新邮件；旧信摘要保留，正文按需临时读取。
 - **凭证分开保存**：密码、OAuth token 和 API Key 使用 macOS Keychain 或 Windows 凭据管理器。
@@ -119,7 +119,7 @@ python3 scripts/check.py
 
 ### Windows
 
-需要 Windows 10 / 11 x64、Visual Studio C++ Build Tools（含 Windows SDK）、Rust stable 和系统 WebView2 Runtime。
+需要 Windows 10 / 11 x64、Visual Studio C++ Build Tools（含 Windows SDK，GPUI 着色器用其中的 fxc 编译）和 Rust 1.97 或更新版本；CI 固定使用 1.97.0。运行时不需要 WebView2。
 
 ```powershell
 ./scripts/build-windows.ps1
@@ -154,7 +154,7 @@ Windows 对应使用 `Ctrl` 替代 `⌘`；`Esc` 返回阅读页。
 
 ## 当前边界
 
-Windows 自动验收覆盖 CI 构建、凭据存取、原生窗口、WebView2 和安装/卸载。尚无 Windows 真机人工验收，自动检查不代表所有显卡、DPI 和服务商环境已验证。
+Windows 自动验收覆盖 CI 构建、凭据存取、原生窗口与原生阅读器（正文文字与屏幕像素、图片与链接策略）、窗口按钮与拖动区的命中测试，以及安装/卸载。尚无 Windows 真机人工验收，自动检查不代表所有显卡、DPI、输入法和服务商环境已验证。
 
 Gmail 已完成真实多账号登录、正文阅读与缓存验证；QQ 已验证真实账号收件同步、正文阅读与 20 封缓存。163 提供接入预设，QQ / 163 的真实发件验证仍待覆盖。协议样例通过不代表所有服务商都已验证，也不代表真实投递到达或所有模型的翻译质量。
 
