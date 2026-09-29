@@ -1,17 +1,18 @@
 # 架构
 
-轻邮使用原生 macOS 界面和本地邮件内核，运行时无需 Node、Python、Rust 工具链或独立后台服务。
+轻邮使用原生 macOS / Windows 界面和本地邮件内核，运行时无需 Node、Python、Rust 工具链或独立后台服务。
 
 ```mermaid
 flowchart LR
     UI[SwiftUI / AppKit] <--> FFI[UniFFI]
     FFI <--> Core[Rust MailApplication]
-    Windows[Windows / GPUI consumer] <--> Core
+    Windows[Windows / GPUI] <--> Core
     Core <--> DB[(SQLite)]
     Core <--> Mail[IMAP / SMTP]
     Core <--> Platform[PlatformServices adapter]
     Platform <--> Keychain[OS credential vault and proxy settings]
     UI --> Reader[受限 WKWebView]
+    Windows --> WebView2[受限系统 WebView2]
     Core --> LLM[Chat Completions 兼容服务]
     Core --> OAuth[OAuth PKCE and token refresh]
     UI --> Translation[Apple Translation]
@@ -22,6 +23,7 @@ flowchart LR
 | 层 | 位置 | 职责 |
 |---|---|---|
 | 界面与交互 | `Sources/Lightmail/` | 选中项、窗口、列表渲染、阅读布局、系统语言包、粘贴板及文件选择 |
+| Windows 界面 | `desktop/src/` | GPUI 视图、编辑状态、凭据/代理适配及 WebView2 宿主 |
 | 共享应用服务 | `core/application.rs` | 同步／IDLE／补偿轮询、任务生命周期、凭证刷新协调、预加载、延迟发送、翻译缓存与事件 |
 | 共享业务模块 | `core/auth.rs`、`translation.rs`、`composition.rs` | OAuth PKCE／回调／刷新、LLM HTTP／SSE／校验、回复／转发、Markdown 导出 |
 | 系统能力接口 | `core/platform.rs`、`Sources/Lightmail/CorePlatform.swift` | `PlatformServices` 提供凭证读写和代理解析；平台实现不决定同步或缓存策略 |
@@ -40,7 +42,7 @@ flowchart LR
 - Apple Translation 只负责语言包和系统翻译执行；分段、结果完整性验证和缓存仍复用 Rust。所有 LLM 网络请求、数字／链接保护、分批与失败判定共用一套实现。
 - `MailEngine` 保留存储查询和旧协议测试入口；新客户端不要直接使用其阻塞式网络方法，也不要再添加自己的轮询、预加载、重试或发送计时器。
 
-`examples/headless.rs` 展示不依赖 Swift、AppKit 或 GPUI 的消费端。CI 在 Windows、Linux 上运行共享核心单元测试和此示例；macOS 另运行真实 WebKit 与回环协议检查。此仓库尚未提供 Windows 图形界面，不能把核心编译通过视为 Windows UI 验收。
+`examples/headless.rs` 展示不依赖 Swift、AppKit 或 GPUI 的消费端。CI 在 Windows、Linux 上运行共享核心单元测试和此示例；macOS 另运行真实 WebKit 与回环协议检查。Windows 专用 CI 构建 GPUI，运行原生窗口与 WebView2 验收，并检查安装、启动、卸载后数据保留；使用隔离示例，仍不能替代真实设备与服务商验证。
 
 ## 收件与阅读
 
@@ -73,3 +75,9 @@ LLM 翻译在用户发起后执行。正文分块带稳定 ID，长邮件分批�
 单封正文 4 MiB，转换后 8 MiB，HTML 最多 64 层 / 50,000 节点；超限明确报错。单附件下载 30 MiB，发送附件合计 25 MiB，EML 导入 30 MiB。首版没有 CID 图片渲染、附件翻译和服务器全量全文搜索。
 
 关闭窗口后进程可继续同步；`⌘Q` 完全退出后不收信，不安装常驻守护进程。
+
+## Windows 平台边界
+
+`desktop/src/app.rs` 把交互转换成共享命令；`events.rs` 合并唤醒，避免通知无限排队。`platform.rs` 只访问 Credential Manager 和固定系统代理。界面复用一个 WebView2，禁用页面 JavaScript，默认阻止外部图片。两端正文、安全策略与导出调用共享 `presentation.rs` / `composition.rs`。
+
+关闭 Windows 窗口会停止服务并退出。安装器安装到用户目录；卸载保留邮件与草稿，移除账号在应用内确认。

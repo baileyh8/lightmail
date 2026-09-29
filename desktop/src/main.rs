@@ -7,6 +7,7 @@ mod app;
 mod assets;
 mod events;
 mod platform;
+mod shortcuts;
 mod views;
 fn main() {
     let args: Vec<_> = std::env::args().collect();
@@ -47,6 +48,7 @@ fn main() {
         .with_assets(assets::Assets)
         .run(move |cx| {
             gpui_component::init(cx);
+            shortcuts::bind(cx);
             Theme::change(ThemeMode::Light, None, cx);
             Theme::global_mut(cx).colors.primary = rgb(0x226451).into();
             Theme::global_mut(cx).font_size = px(13.);

@@ -2,25 +2,28 @@
 
 ## Project Structure & Module Organization
 
-Lightmail pairs a native macOS interface with shared Rust services through UniFFI.
+Lightmail pairs a native macOS/Windows interfaces with shared Rust services through UniFFI on macOS.
 
 - `Sources/Lightmail/`: SwiftUI/AppKit views, presentation state, OS adapters, and Swift test harnesses.
+- `desktop/`: Windows GPUI views, WebView2 host, OS adapters, and CI acceptance.
 - `core/`: application services, OAuth, translation, composition, protocols, SQLite, caching, and Rust tests.
 - `examples/headless.rs`: portable service consumer without a UI.
 - `Generated/FFI/` and `Sources/Lightmail/Generated/`: generated bindings; regenerate rather than edit manually.
 - `tests/`, `scripts/`: Python protocol fixtures, builds, validation, and packaging.
 - `Resources/`, `docs/`: assets, architecture, screenshots, and release notes.
-- `third_party/imap-proto/`: vendored compatibility patch; preserve licenses and patch documentation.
+- `third_party/imap-proto/`: vendored compatibility patch; preserve licenses.
 
 ## Build, Test, and Development Commands
 
-The app requires Apple Silicon, macOS 15+, Swift 6+, Rust stable, and Python 3. Core-only work requires Rust.
+macOS needs Apple Silicon, macOS 15+, Swift 6+, Rust, and Python 3. Windows needs Rust, MSVC, Windows SDK, and WebView2.
 
 - `bash scripts/bootstrap-rust.sh`: install project-local Rust if needed.
 - `bash scripts/build.sh`: build Rust, regenerate bindings, compile and sign `dist/轻邮.app`.
 - `bash scripts/cargo.sh test --lib`: run Rust tests.
 - `python3 scripts/check.py`: run isolated checks after building.
 - `cargo run --locked --example headless -- build/headless-demo`: exercise shared services without Swift.
+- `./scripts/build-windows.ps1`: build the Windows client.
+- `./scripts/package-windows.ps1`: create installer and portable ZIP.
 - `bash scripts/package.sh`: generate ZIP and checksums.
 
 ## Architecture Boundaries
@@ -29,15 +32,15 @@ Keep sync scheduling, retries, cache windows, outbox timers, OAuth, LLM translat
 
 ## Coding Style & Naming Conventions
 
-Use two-space Swift indentation and four-space Rust/Python indentation. Types use `UpperCamelCase`; Swift members use `lowerCamelCase`; Rust/Python functions use `snake_case`. Run rustfmt on edited Rust. No Swift linter is configured. Avoid unrelated formatting changes.
+Use two-space Swift indentation and four-space Rust/Python indentation. Types use `UpperCamelCase`; Swift members use `lowerCamelCase`; Rust/Python functions use `snake_case`. Run rustfmt on edited Rust. No Swift linter is configured.
 
 ## Testing Guidelines
 
-Add behavior-focused Rust regression tests and synthetic fixtures. CI tests the core on Windows/Linux; macOS also validates Swift, WebKit, protocols, and memory. There is no numeric coverage threshold. Fixture success does not prove provider delivery or sustained memory stability.
+Add behavior-focused Rust regression tests and synthetic fixtures. CI validates Windows/Linux core, native interfaces, protocols, and memory. No numeric coverage threshold applies. Fixtures do not prove provider delivery or long-run stability.
 
 ## Commit & Pull Request Guidelines
 
-History favors concise imperative `fix:` and `docs:` commits. Explain behavior, linked issues, checks, limitations, and relevant screenshots in PRs.
+Use imperative `fix:` and `docs:` commits. PRs describe behavior, checks, limitations, and screenshots.
 
 ## Security & Resource Discipline
 

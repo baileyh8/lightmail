@@ -1,10 +1,14 @@
 use crate::app::{date, MailDesktop, Page};
+use crate::shortcuts::*;
 use gpui::{prelude::*, *};
-use gpui_component::Icon;
 use gpui_component::{
     button::{Button, ButtonVariants},
     input::Input,
     Disableable, Selectable, Sizable,
+};
+use gpui_component::{
+    menu::{DropdownMenu, PopupMenuItem},
+    Icon,
 };
 use lightmail_core::*;
 
@@ -420,6 +424,8 @@ impl MailDesktop {
                                 .relative()
                                 .child(probe_marker(format!("message-{index}"), cx))
                                 .h(px(94.))
+                                .w(px(355.))
+                                .overflow_hidden()
                                 .mx(px(5.))
                                 .pl(px(27.))
                                 .pr(px(12.))
@@ -447,6 +453,7 @@ impl MailDesktop {
                                         .child(
                                             div()
                                                 .flex_1()
+                                                .min_w_0()
                                                 .overflow_hidden()
                                                 .text_ellipsis()
                                                 .whitespace_nowrap()
@@ -484,7 +491,8 @@ impl MailDesktop {
                                             } else {
                                                 m.snippet
                                             })
-                                            .flex_1()
+                                            .w(px(238.))
+                                            .flex_shrink_0()
                                             .overflow_hidden()
                                             .text_ellipsis()
                                             .whitespace_nowrap(),
@@ -508,7 +516,13 @@ impl MailDesktop {
                                         .h(px(0.5))
                                         .bg(rgb(LINE)),
                                 )
-                                .on_click(cx.listener(move |s, _, _, cx| s.select(id.clone(), cx)))
+                                .on_click(cx.listener(move |s, event: &ClickEvent, _, cx| {
+                                    s.select(id.clone(), cx);
+                                    if event.click_count() > 1 {
+                                        s.focus_reading = true;
+                                        cx.notify();
+                                    }
+                                }))
                         })
                         .collect::<Vec<_>>()
                 }),
@@ -555,16 +569,26 @@ impl MailDesktop {
                     .child(
                         row()
                             .child(
-                                Button::new("all")
-                                    .label("全部")
-                                    .ghost()
-                                    .rounded(px(0.))
+                                div()
+                                    .id("all")
+                                    .h(px(28.))
+                                    .px(px(6.))
+                                    .flex()
+                                    .items_center()
                                     .text_size(px(12.))
-                                    .when(!self.unread_only, |b| {
-                                        b.text_color(rgb(ACCENT))
-                                            .border_b_2()
-                                            .border_color(rgb(ACCENT))
+                                    .cursor_pointer()
+                                    .border_b_2()
+                                    .border_color(if !self.unread_only {
+                                        rgb(ACCENT)
+                                    } else {
+                                        rgba(0x00000000)
                                     })
+                                    .text_color(if !self.unread_only {
+                                        rgb(ACCENT)
+                                    } else {
+                                        rgb(MUTED)
+                                    })
+                                    .child("全部")
                                     .on_click(cx.listener(|s, _, _, cx| {
                                         s.unread_only = false;
                                         s.page_offset = 0;
@@ -573,16 +597,26 @@ impl MailDesktop {
                                     })),
                             )
                             .child(
-                                Button::new("unread")
-                                    .label("未读")
-                                    .ghost()
-                                    .rounded(px(0.))
+                                div()
+                                    .id("unread")
+                                    .h(px(28.))
+                                    .px(px(6.))
+                                    .flex()
+                                    .items_center()
                                     .text_size(px(12.))
-                                    .when(self.unread_only, |b| {
-                                        b.text_color(rgb(ACCENT))
-                                            .border_b_2()
-                                            .border_color(rgb(ACCENT))
+                                    .cursor_pointer()
+                                    .border_b_2()
+                                    .border_color(if self.unread_only {
+                                        rgb(ACCENT)
+                                    } else {
+                                        rgba(0x00000000)
                                     })
+                                    .text_color(if self.unread_only {
+                                        rgb(ACCENT)
+                                    } else {
+                                        rgb(MUTED)
+                                    })
+                                    .child("未读")
                                     .on_click(cx.listener(|s, _, _, cx| {
                                         s.unread_only = true;
                                         s.page_offset = 0;
@@ -642,10 +676,69 @@ impl MailDesktop {
     fn reader_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected.is_some();
         let body_ready = self.body.is_some();
+        let weak = cx.entity().downgrade();
+        let starred = self.selected.as_ref().is_some_and(|m| m.starred);
+        let unread = self.selected.as_ref().is_some_and(|m| m.unread);
+        let more = Button::new("reader-more")
+            .icon(icon("more"))
+            .ghost()
+            .disabled(!selected)
+            .dropdown_menu(move |menu, _, _| {
+                let star = weak.clone();
+                let seen = weak.clone();
+                let layout = weak.clone();
+                let reply = weak.clone();
+                let forward = weak.clone();
+                menu.item(
+                    PopupMenuItem::new(if starred { "取消星标" } else { "加星标" }).on_click(
+                        move |_, _, cx| {
+                            let _ =
+                                star.update(cx, |s, cx| s.mark_selected("starred", !starred, cx));
+                        },
+                    ),
+                )
+                .item(
+                    PopupMenuItem::new(if unread {
+                        "标记已读"
+                    } else {
+                        "标记未读"
+                    })
+                    .on_click(move |_, _, cx| {
+                        let _ = seen.update(cx, |s, cx| s.mark_selected("seen", unread, cx));
+                    }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new("切换原始排版 / 清爽阅读").on_click(move |_, _, cx| {
+                        let _ = layout.update(cx, |s, cx| {
+                            s.plain_reading = !s.plain_reading;
+                            s.mode = ExportMode::Original;
+                            s.reader_dirty = true;
+                            cx.notify();
+                        });
+                    }),
+                )
+                .separator()
+                .item(PopupMenuItem::new("回复全部").on_click(move |_, w, cx| {
+                    let _ = reply.update(cx, |s, cx| s.new_draft(ComposeMode::ReplyAll, w, cx));
+                }))
+                .item(PopupMenuItem::new("转发").on_click(move |_, w, cx| {
+                    let _ = forward.update(cx, |s, cx| s.new_draft(ComposeMode::Forward, w, cx));
+                }))
+            });
         let mut panel = column().flex_1().h_full().child(
             row()
                 .h(px(64.))
+                .flex_shrink_0()
                 .px_5()
+                .when(self.focus_reading, |bar| {
+                    bar.child(Button::new("back-list").label("返回列表").ghost().on_click(
+                        cx.listener(|s, _, _, cx| {
+                            s.focus_reading = false;
+                            cx.notify();
+                        }),
+                    ))
+                })
                 .border_b_1()
                 .border_color(rgb(LINE))
                 .child(
@@ -664,20 +757,7 @@ impl MailDesktop {
                         .disabled(!selected)
                         .on_click(cx.listener(|s, _, _, cx| s.move_selected("trash", cx))),
                 )
-                .child(
-                    Button::new("star")
-                        .label(if self.selected.as_ref().is_some_and(|m| m.starred) {
-                            "取消星标"
-                        } else {
-                            "星标"
-                        })
-                        .ghost()
-                        .disabled(!selected)
-                        .on_click(cx.listener(|s, _, _, cx| {
-                            let value = !s.selected.as_ref().is_some_and(|m| m.starred);
-                            s.mark_selected("flagged", value, cx);
-                        })),
-                )
+                .child(more)
                 .child(div().flex_1())
                 .child(
                     Button::new("translate")
@@ -740,6 +820,7 @@ impl MailDesktop {
             if !message.cc_addresses.is_empty() {
                 header = header.child(muted(format!("抄送：{}", message.cc_addresses)));
             }
+            header = header.child(div().h(px(1.)).mt_3().mb_3().bg(rgb(LINE)));
             let mut controls = row().gap_2().child(
                 Button::new("images")
                     .label(if self.images {
@@ -892,13 +973,18 @@ impl MailDesktop {
                 .px(px(36.))
                 .border_b_1()
                 .border_color(rgb(LINE))
-                .child(title("设置"))
+                .child(
+                    div()
+                        .text_size(px(22.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("设置"),
+                )
                 .child(div().flex_1())
                 .child(
                     Button::new("accounts-tab")
                         .label("邮箱账号")
                         .ghost()
-                        .selected(self.page == Page::Accounts)
+                        .when(self.page == Page::Accounts, |b| b.primary())
                         .on_click(cx.listener(|s, _, w, cx| s.open_accounts(None, w, cx))),
                 )
                 .child(probe(
@@ -906,7 +992,7 @@ impl MailDesktop {
                     Button::new("translation-tab")
                         .label("翻译")
                         .ghost()
-                        .selected(self.page == Page::Translation)
+                        .when(self.page == Page::Translation, |b| b.primary())
                         .on_click(cx.listener(|s, _, w, cx| {
                             s.page = Page::Translation;
                             s.load_translation_config(w, cx);
@@ -920,14 +1006,16 @@ impl MailDesktop {
                     Button::new("storage-tab")
                         .label("存储")
                         .ghost()
-                        .selected(self.page == Page::Storage)
+                        .when(self.page == Page::Storage, |b| b.primary())
                         .on_click(cx.listener(|s, _, _, cx| s.open_storage(cx))),
                     cx,
                 ))
+                .child(div().flex_1())
                 .child(probe(
                     "settings-done",
                     Button::new("settings-done")
                         .label("完成")
+                        .outline()
                         .on_click(cx.listener(|s, _, _, cx| {
                             s.page = Page::Mail;
                             s.record("settings-close");
@@ -950,7 +1038,11 @@ impl MailDesktop {
                     Button::new("new-account")
                         .label("＋")
                         .ghost()
-                        .on_click(cx.listener(|s, _, w, cx| s.open_accounts(None, w, cx))),
+                        .on_click(cx.listener(|s, _, w, cx| {
+                            s.open_accounts(None, w, cx);
+                            s.adding_account = true;
+                            cx.notify();
+                        })),
                 ),
             );
             for a in &self.accounts {
@@ -996,7 +1088,7 @@ impl MailDesktop {
                 providers = providers.child(
                     Button::new(label)
                         .label(label)
-                        .selected(self.provider == p)
+                        .when(self.provider == p, |b| b.primary())
                         .on_click(cx.listener(move |s, _, w, cx| s.apply_preset(p.into(), w, cx))),
                 );
             }
@@ -1134,6 +1226,35 @@ impl MailDesktop {
                         }),
                 );
             }
+            let form =
+                if self.editing.is_none() && !self.adding_account && !self.accounts.is_empty() {
+                    column()
+                        .flex_1()
+                        .h_full()
+                        .p(px(30.))
+                        .gap_5()
+                        .child(
+                            div()
+                                .text_size(px(24.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("连接你的邮箱"),
+                        )
+                        .child(muted("每个账号独立同步，聚合查看时仍清楚标明来源。"))
+                        .child(
+                            row().child(
+                                Button::new("start-add-account")
+                                    .label("添加邮箱")
+                                    .primary()
+                                    .on_click(cx.listener(|s, _, _, cx| {
+                                        s.adding_account = true;
+                                        cx.notify();
+                                    })),
+                            ),
+                        )
+                        .into_any_element()
+                } else {
+                    form.into_any_element()
+                };
             root = root.child(
                 row()
                     .items_start()
@@ -1141,7 +1262,7 @@ impl MailDesktop {
                     .min_h_0()
                     .gap_0()
                     .child(accounts.h_full())
-                    .child(form.h_full()),
+                    .child(form),
             );
         } else if self.page == Page::Storage {
             let info = self.storage.as_ref();
@@ -1152,14 +1273,118 @@ impl MailDesktop {
                 .child(row().child(Button::new("clear-cache").label("清理正文缓存").on_click(cx.listener(|s,_,_,cx|s.clear_cache(cx)))).child(Button::new("import-mail").label("导入 .eml 邮件").on_click(cx.listener(|s,_,_,cx|s.import_mail(cx)))))
                 .child(muted("账号授权码和 API Key 保存在 Windows 凭据管理器。卸载应用时保留邮件数据，避免误删。")));
         } else {
-            root=root.child(column().id("translation-form").flex_1().overflow_y_scroll().p_7().gap_5().child(title("全文翻译"))
+            let mut profiles = column()
+                .w(px(230.))
+                .h_full()
+                .flex_shrink_0()
+                .p_4()
+                .gap_2()
+                .bg(rgb(0xf5f6f5))
+                .border_r_1()
+                .border_color(rgb(LINE))
+                .child(row().child(muted("翻译服务")).child(div().flex_1()).child(
+                    Button::new("add-translation").label("＋").ghost().on_click(
+                        cx.listener(|s, _, w, cx| s.select_translation_config(None, w, cx)),
+                    ),
+                ));
+            for config in self.configurations.iter().filter(|c| c.engine == "llm") {
+                let c = config.clone();
+                profiles = profiles.child(
+                    column()
+                        .id(SharedString::from(format!("config-{}", c.id)))
+                        .p_3()
+                        .gap_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .when(
+                            self.configuration
+                                .as_ref()
+                                .is_some_and(|current| current.id == c.id),
+                            |v| v.bg(rgb(SELECTED)),
+                        )
+                        .hover(|v| v.bg(rgb(SELECTED)))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(c.name.clone()),
+                        )
+                        .child(muted(c.model.clone()).text_size(px(10.)))
+                        .on_click(cx.listener(move |s, _, w, cx| {
+                            s.select_translation_config(Some(c.id.clone()), w, cx)
+                        })),
+                );
+            }
+            profiles = profiles
+                .child(div().flex_1())
+                .child(muted("只在你点击翻译时请求。\n译文缓存到本机。").text_size(px(11.)));
+            let form=column().id("translation-form").flex_1().overflow_y_scroll().p_7().gap_5().child(title("全文翻译"))
                 .child(muted("使用 OpenAI Chat Completions 兼容服务。Windows 版使用 LLM 翻译；系统语言包功能仅适用于 macOS。"))
                 .child(self.field("translation_name","配置名称")).child(self.field("base_url","Base URL")).child(self.field("api_key","API Key（已有配置可留空）")).child(self.field("model","Model")).child(self.field("language","目标语言")).child(self.field("glossary","术语表"))
                 .child(row().child(Button::new("stream").label(if self.config_stream{"✓ 流式响应"}else{"非流式响应"}).ghost().on_click(cx.listener(|s,_,_,cx|{s.config_stream=!s.config_stream;cx.notify();}))).child(Button::new("json-format").label(if self.config_json{"✓ JSON 模式"}else{"提示词 JSON（兼容性优先）"}).ghost().on_click(cx.listener(|s,_,_,cx|{s.config_json=!s.config_json;cx.notify();}))))
                 .child(muted("仅在主动翻译时发送当前邮件主题与正文，附件不会上传。测试连接只发送合成文本。"))
-                .child(row().child(Button::new("save-translation").label("保存并设为默认").primary().disabled(self.busy).on_click(cx.listener(|s,_,_,cx|s.save_translation(false,cx)))).child(Button::new("test-translation").label("测试连接").disabled(self.busy).on_click(cx.listener(|s,_,_,cx|s.save_translation(true,cx))))));
+                .child(row().child(Button::new("save-translation").label("保存并设为默认").primary().disabled(self.busy).on_click(cx.listener(|s,_,_,cx|s.save_translation(false,cx)))).child(Button::new("test-translation").label("测试连接").disabled(self.busy).on_click(cx.listener(|s,_,_,cx|s.save_translation(true,cx)))));
+            root = root.child(
+                row()
+                    .gap_0()
+                    .flex_1()
+                    .min_h_0()
+                    .items_start()
+                    .child(profiles)
+                    .child(form.h_full()),
+            );
         }
-        root
+        root.child(
+            row()
+                .h(px(38.))
+                .flex_shrink_0()
+                .px_6()
+                .border_t_1()
+                .border_color(rgb(LINE))
+                .child(muted("轻邮 Lightmail"))
+                .child(div().flex_1())
+                .child(
+                    Button::new("privacy")
+                        .label("隐私政策")
+                        .ghost()
+                        .small()
+                        .on_click(|_, _, cx| cx.open_url("https://lightmail.sohym.com/privacy/")),
+                )
+                .child(
+                    Button::new("terms")
+                        .label("使用条款")
+                        .ghost()
+                        .small()
+                        .on_click(|_, _, cx| cx.open_url("https://lightmail.sohym.com/terms/")),
+                ),
+        )
+    }
+    fn welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        column()
+            .flex_1()
+            .h_full()
+            .items_center()
+            .justify_center()
+            .gap_5()
+            .child(icon("plane").size(px(48.)).text_color(rgb(ACCENT)))
+            .child(
+                div()
+                    .text_size(px(34.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_center()
+                    .child("邮件归于一处，\n专注每一次沟通。"),
+            )
+            .child(muted("连接 Gmail、163 和 QQ，轻快地收发、阅读与翻译。"))
+            .child(
+                Button::new("welcome-add")
+                    .label("连接邮箱")
+                    .primary()
+                    .on_click(cx.listener(|s, _, w, cx| {
+                        s.open_accounts(None, w, cx);
+                        s.adding_account = true;
+                        cx.notify();
+                    })),
+            )
     }
     fn compose_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         column().flex_1().h_full().child(row().h(px(70.)).px(px(36.)).border_b_1().border_color(rgb(LINE)).child(title("写邮件")).child(div().flex_1()).child(probe("save-draft",Button::new("save-draft").label("保存草稿").on_click(cx.listener(|s,_,_,cx|s.save_draft(false,cx))),cx)).child(Button::new("send").label("发送").primary().disabled(self.busy).on_click(cx.listener(|s,_,_,cx|s.save_draft(true,cx)))))
@@ -1190,17 +1415,37 @@ impl Render for MailDesktop {
         );
         let content = if self.page == Page::Compose {
             self.compose_panel(cx).into_any_element()
+        } else if self.accounts.is_empty() {
+            self.welcome(cx).into_any_element()
         } else {
             row()
                 .items_start()
                 .gap_0()
                 .flex_1()
                 .min_h_0()
-                .child(self.mail_list(cx))
+                .when(!self.focus_reading, |v| v.child(self.mail_list(cx)))
                 .child(self.reader_panel(cx))
                 .into_any_element()
         };
         div()
+            .id("lightmail-root")
+            .key_context("Lightmail")
+            .on_action(cx.listener(|s, _: &NewMessage, w, cx| s.new_draft(ComposeMode::New, w, cx)))
+            .on_action(cx.listener(|s, _: &FocusSearch, w, cx| {
+                s.fields["search"].update(cx, |input, cx| input.focus(w, cx));
+            }))
+            .on_action(cx.listener(|s, _: &RefreshMail, _, cx| s.refresh(cx)))
+            .on_action(cx.listener(|s, _: &Reply, w, cx| s.new_draft(ComposeMode::Reply, w, cx)))
+            .on_action(cx.listener(|s, _: &Translate, _, cx| s.translate(false, cx)))
+            .on_action(cx.listener(|s, _: &CopyMarkdown, _, cx| s.copy(cx)))
+            .on_action(cx.listener(|s, _: &Settings, w, cx| s.open_accounts(None, w, cx)))
+            .on_action(cx.listener(|s, _: &ImportMail, _, cx| s.import_mail(cx)))
+            .on_action(cx.listener(|s, _: &ClosePanel, _, cx| {
+                s.persist_compose(cx);
+                s.page = Page::Mail;
+                s.focus_reading = false;
+                cx.notify();
+            }))
             .relative()
             .size_full()
             .font_family(if cfg!(windows) {
@@ -1225,6 +1470,7 @@ impl Render for MailDesktop {
                         .absolute()
                         .inset_0()
                         .bg(rgba(0x20272433))
+                        .occlude()
                         .flex()
                         .items_center()
                         .justify_center()

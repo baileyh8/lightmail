@@ -25,6 +25,8 @@ pub enum Page {
     Compose,
 }
 pub struct MailDesktop {
+    pub focus_reading: bool,
+    pub plain_reading: bool,
     pub adding_account: bool,
     pub probes: HashMap<String, Bounds<Pixels>>,
     pub engine: Arc<MailEngine>,
@@ -167,6 +169,8 @@ impl MailDesktop {
             }
         });
         let mut app = Self {
+            focus_reading: false,
+            plain_reading: false,
             adding_account: false,
             probes: HashMap::new(),
             engine,
@@ -364,6 +368,7 @@ impl MailDesktop {
         cx: &mut Context<Self>,
     ) {
         self.persist_compose(cx);
+        self.focus_reading = false;
         self.page_offset = 0;
         self.search_text.clear();
         self.cancel_translation();
@@ -945,6 +950,24 @@ impl MailDesktop {
             .find(|c| c.id == selected && c.engine == "llm")
             .or_else(|| self.configurations.iter().find(|c| c.engine == "llm"))
             .cloned();
+        self.fill_translation_fields(window, cx);
+    }
+    pub fn select_translation_config(
+        &mut self,
+        id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.configuration = id.and_then(|id| {
+            self.configurations
+                .iter()
+                .find(|c| c.id == id && c.engine == "llm")
+                .cloned()
+        });
+        self.fill_translation_fields(window, cx);
+        cx.notify();
+    }
+    fn fill_translation_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let c = self
             .configuration
             .clone()
@@ -1171,7 +1194,10 @@ impl MailDesktop {
             }
             return;
         }
-        let body = self.body.clone().unwrap();
+        let mut body = self.body.clone().unwrap();
+        if self.plain_reading {
+            body.html.clear();
+        }
         let result = render_body_document(body, self.translation.clone(), self.mode, self.images);
         match result {
             Ok(html) => {
