@@ -28,6 +28,7 @@ def wait_file(path, server):
 
 
 def main():
+    run([sys.executable, "tests/loopback_http.py"])
     run(["bash", "scripts/cargo.sh", "test", "--lib"])
     run([str(APP), "--self-test"])
     with tempfile.TemporaryDirectory(prefix="lightmail-render-", dir=ROOT / "build") as fixture:

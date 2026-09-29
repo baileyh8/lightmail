@@ -8,7 +8,8 @@ import re
 import socketserver
 import ssl
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from loopback_http import LoopbackThreadingHTTPServer
 from proxy_fixture import Proxy
 
 STATE = {"validity": 7, "seen": False, "body_fetches": 0, "attachment_fetches": 0,
@@ -163,7 +164,7 @@ if __name__ == "__main__":
     http=Server(("127.0.0.1",0),Proxy);http.kind="http"
     for proxy in (socks,http):
         proxy.allowed_ports={imap.server_address[1],smtp.server_address[1]};proxy.state=STATE
-    control=ThreadingHTTPServer(("127.0.0.1",0),Control)
+    control=LoopbackThreadingHTTPServer(("127.0.0.1",0),Control)
     with open(args.ports_file,"w")as f:json.dump({"imap":imap.server_address[1],"smtp":smtp.server_address[1],"control":control.server_address[1],"socks5":socks.server_address[1],"http":http.server_address[1]},f)
     for server in [imap,smtp,socks,http]:threading.Thread(target=server.serve_forever,daemon=True).start()
     print("Loopback mail fixtures ready",flush=True)

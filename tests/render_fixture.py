@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Loopback-only image server. Records synthetic paths, never real mail."""
 import base64
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+from loopback_http import LoopbackHTTPServer
 from pathlib import Path
 import sys
 
@@ -19,7 +20,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(png if self.path.endswith('.png') else b'blocked resource')
 
-server = HTTPServer(('127.0.0.1', 0), Handler)
+server = LoopbackHTTPServer(('127.0.0.1', 0), Handler)
 (root / 'requests.txt').write_text('')
 (root / 'port').write_text(str(server.server_port))
 server.serve_forever()

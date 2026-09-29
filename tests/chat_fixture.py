@@ -2,7 +2,8 @@
 """Loopback-only Chat Completions fixture. Contains no credentials or user mail."""
 import argparse
 import json
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler
+from loopback_http import LoopbackThreadingHTTPServer
 
 TRANSLATIONS = {
     "Q4 launch · final review": "第4季度发布 · 最终审阅",
@@ -79,7 +80,7 @@ if __name__ == "__main__":
     p.add_argument("--port", type=int, default=0)
     p.add_argument("--port-file", required=True)
     args = p.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server = LoopbackThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     with open(args.port_file, "w") as f:
         f.write(str(server.server_port))
     print(f"Synthetic Chat fixture ready on 127.0.0.1:{server.server_port}", flush=True)
