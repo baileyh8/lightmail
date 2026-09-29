@@ -580,6 +580,31 @@ fn real_account(id: &str, provider: &str, auth: &str) -> Account {
         sent_mode: "server".into(),
     }
 }
+fn put_folder(engine: &MailEngine, account: &str, path: &str, role: &str) {
+    let f = Folder {
+        id: folder_id(account, path),
+        account_id: account.into(),
+        path: path.into(),
+        name: path.into(),
+        role: role.into(),
+        unread_count: 0,
+        total_count: 0,
+    };
+    engine
+        .connection()
+        .unwrap()
+        .execute(
+            "INSERT INTO folders(id,account_id,path,role,data) VALUES(?1,?2,?3,?4,?5)",
+            rusqlite::params![
+                f.id,
+                f.account_id,
+                f.path,
+                f.role,
+                serde_json::to_string(&f).unwrap()
+            ],
+        )
+        .unwrap();
+}
 fn force_status(engine: &MailEngine, draft: &Draft, status: &str) {
     let mut d = draft.clone();
     d.status = status.into();
@@ -772,4 +797,100 @@ fn oauth_refresh_does_not_overwrite_a_newer_sign_in() {
         );
         assert_eq!(server.requests.lock().unwrap().len(), 1);
     });
+}
+
+#[test]
+fn older_summaries_follow_the_scope_and_starred_prefers_all_mail() {
+    let (_dir, engine, app, _, _) = fixture();
+    let mut work = real_account("work", "custom", "password");
+    let mut gmail = real_account("gmail", "gmail", "oauth");
+    work.enabled = true;
+    gmail.enabled = true;
+    let off = real_account("off", "custom", "password");
+    for account in [&work, &gmail, &off] {
+        engine.save_account(account.clone()).unwrap();
+    }
+    for (path, role) in [
+        ("INBOX", "inbox"),
+        ("Sent", "sent"),
+        ("Trash", "trash"),
+        ("Spam", "junk"),
+        ("Projects", "custom"),
+        ("local", "inbox"),
+    ] {
+        put_folder(&engine, "work", path, role);
+    }
+    for (path, role) in [
+        ("INBOX", "inbox"),
+        ("[Gmail]/All Mail", "allmail"),
+        ("[Gmail]/Trash", "trash"),
+    ] {
+        put_folder(&engine, "gmail", path, role);
+    }
+    put_folder(&engine, "off", "INBOX", "inbox");
+    let pair = |a: &str, p: &str| (a.to_string(), p.to_string());
+    let sorted = |mut v: Vec<(String, String)>| {
+        v.sort();
+        v
+    };
+    assert_eq!(
+        sorted(app.older_targets("", "", "inbox").unwrap()),
+        vec![pair("gmail", "INBOX"), pair("work", "INBOX")]
+    );
+    assert_eq!(
+        sorted(app.older_targets("work", "", "starred").unwrap()),
+        vec![
+            pair("work", "INBOX"),
+            pair("work", "Projects"),
+            pair("work", "Sent")
+        ]
+    );
+    assert_eq!(
+        app.older_targets("gmail", "", "starred").unwrap(),
+        vec![pair("gmail", "[Gmail]/All Mail")]
+    );
+    assert!(app.older_targets("", "", "outbox").unwrap().is_empty());
+    assert_eq!(
+        app.older_targets("", &folder_id("work", "Projects"), "all")
+            .unwrap(),
+        vec![pair("work", "Projects")]
+    );
+    assert!(app.older_targets("off", "", "inbox").unwrap().is_empty());
+}
+
+#[test]
+fn delivery_unknown_is_settled_by_the_user_without_resending() {
+    let (_dir, engine, app, _, events) = fixture();
+    let account = real_account("settle", "custom", "password");
+    engine.save_account(account.clone()).unwrap();
+    let mut draft = compose_draft(account, None, None, ComposeMode::New, String::new());
+    draft.to = "someone@example.com".into();
+    let draft = engine.save_draft(draft).unwrap();
+    assert!(
+        app.resolve_delivery(draft.id.clone(), true).is_err(),
+        "only interrupted submissions can be settled"
+    );
+    force_status(&engine, &draft, "delivery_unknown");
+    let state = DraftState::parse("delivery_unknown").unwrap();
+    assert!(state.resolvable() && state.in_outbox());
+    assert!(!state.deletable() && !state.retryable() && !state.editable());
+    let back = app.resolve_delivery(draft.id.clone(), false).unwrap();
+    assert_eq!(back.status, "draft");
+    assert!(DraftState::of(&back).unwrap().editable());
+    assert!(app.resolve_delivery(draft.id.clone(), false).is_err());
+    force_status(&engine, &draft, "delivery_unknown");
+    let done = app.resolve_delivery(draft.id.clone(), true).unwrap();
+    assert_eq!(done.status, "accepted");
+    let state = DraftState::of(&done).unwrap();
+    assert!(state.deletable() && !state.in_outbox() && !state.editable());
+    assert!(events
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| matches!(e.kind, ApplicationEventKind::DraftChanged)));
+    assert_eq!(DraftState::parse("unknown"), None);
+    assert!(DraftState::parse("queued").unwrap().withdrawable());
+    assert!(DraftState::parse("failed").unwrap().retryable());
+    assert!(!DraftState::parse("sending").unwrap().deletable());
 }

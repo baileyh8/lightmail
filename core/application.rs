@@ -473,7 +473,94 @@ fn validate_recipients(draft: &Draft) -> Result<()> {
     }
     Ok(())
 }
+// Rust-only commands used by the Windows client. They can be exported once the
+// Swift bindings are regenerated; until then macOS keeps its existing calls.
 impl MailApplication {
+    /// Fetch older remote summaries for a list scope. The core decides which
+    /// folders back a scope, so starred mail is fetched where it actually lives.
+    pub async fn load_older(
+        self: Arc<Self>,
+        account_id: String,
+        folder_id: String,
+        scope: String,
+    ) -> Result<()> {
+        self.clone()
+            .command(async move {
+                let mut first_error = None;
+                for (account, path) in self.older_targets(&account_id, &folder_id, &scope)? {
+                    if let Err(error) = self.sync_inner(&account, Some(path), true).await {
+                        first_error.get_or_insert(error);
+                    }
+                }
+                first_error.map_or(Ok(()), Err)
+            })
+            .await
+    }
+    pub(crate) fn older_targets(
+        &self,
+        account_id: &str,
+        folder_id: &str,
+        scope: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let accounts: Vec<Account> = self
+            .engine
+            .accounts()?
+            .into_iter()
+            .filter(|a| a.enabled && !["demo", "local"].contains(&a.provider.as_str()))
+            .filter(|a| account_id.is_empty() || a.id == account_id)
+            .collect();
+        let folders: Vec<Folder> = self
+            .engine
+            .folders(String::new())?
+            .into_iter()
+            .filter(|f| f.path != "local" && accounts.iter().any(|a| a.id == f.account_id))
+            .collect();
+        if !folder_id.is_empty() {
+            return Ok(folders
+                .into_iter()
+                .filter(|f| f.id == folder_id)
+                .map(|f| (f.account_id, f.path))
+                .collect());
+        }
+        let mut targets = Vec::new();
+        for account in &accounts {
+            let own: Vec<&Folder> = folders
+                .iter()
+                .filter(|f| f.account_id == account.id)
+                .collect();
+            match scope {
+                // Drafts and the outbox exist only in the local database.
+                "drafts" | "outbox" => {}
+                // Starred mail can be in any folder. Gmail's All Mail already holds
+                // every label except Spam and Trash, so one folder suffices there.
+                "starred" => match own.iter().find(|f| f.role == "allmail") {
+                    Some(all) => targets.push((account.id.clone(), all.path.clone())),
+                    None => targets.extend(
+                        own.iter()
+                            .filter(|f| !["trash", "junk"].contains(&f.role.as_str()))
+                            .map(|f| (account.id.clone(), f.path.clone())),
+                    ),
+                },
+                role => targets.extend(
+                    own.iter()
+                        .filter(|f| f.role == role)
+                        .map(|f| (account.id.clone(), f.path.clone())),
+                ),
+            }
+        }
+        Ok(targets)
+    }
+    /// Settle an interrupted submission after the user checked the server.
+    pub fn resolve_delivery(&self, id: String, delivered: bool) -> Result<Draft> {
+        let draft = self.engine.resolve_delivery(&id, delivered)?;
+        self.emit(
+            ApplicationEventKind::DraftChanged,
+            &draft.account_id,
+            String::new(),
+            false,
+        );
+        Ok(draft)
+    }
     fn reconcile_workers(self: &Arc<Self>) -> Result<()> {
         let cancellation = self.cancellation.lock().unwrap();
         if cancellation.is_cancelled() {
