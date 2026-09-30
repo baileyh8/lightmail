@@ -1414,6 +1414,21 @@ impl MailDesktop {
             self.mode,
             !self.plain_reading,
         ) {
+            Ok(lightmail_core::ReaderContent::Html(html)) if !self.plain_reading => {
+                match crate::blitz_reader::render(&html, 720, self.images, self.platform.clone()) {
+                    Ok(rendered) => {
+                        self.reader = Some(crate::reader::Document::Blitz(Arc::new(rendered)));
+                        self.reader_error = None;
+                    }
+                    Err(error) => {
+                        // Keep the old reader as a safe fallback while the
+                        // native engine is still being integrated.
+                        self.reader = Some(crate::reader::Document::Html(html.into()));
+                        self.status = format!("原生 HTML 阅读器回退：{error}");
+                        self.reader_error = None;
+                    }
+                }
+            }
             Ok(content) => {
                 self.reader = Some(content.into());
                 self.reader_error = None;
@@ -1479,7 +1494,7 @@ mod tests {
             });
             s.reader_dirty = true;
             s.update_reader();
-            assert!(matches!(s.reader, Some(crate::reader::Document::Html(_))));
+            assert!(matches!(s.reader, Some(crate::reader::Document::Blitz(_))));
             s.body.as_mut().unwrap().html.clear();
             s.reader_dirty = true;
             s.update_reader();

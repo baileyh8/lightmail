@@ -5,6 +5,7 @@ use gpui_kit::{prelude::*, *};
 mod acceptance;
 mod app;
 mod assets;
+mod blitz_reader;
 mod events;
 mod images;
 mod instance;

@@ -299,6 +299,7 @@ async fn soak(
 fn document_text(view: &Entity<MailDesktop>, cx: &App) -> Option<String> {
     Some(match view.read(cx).reader.as_ref()? {
         Document::Markdown(text) | Document::Html(text) => text.to_string(),
+        Document::Blitz(rendered) => rendered.source.clone(),
         Document::Bilingual(pairs) => pairs
             .iter()
             .map(|(source, target)| format!("{source} {target}"))
@@ -424,7 +425,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
                 let body=s.body.as_mut().unwrap();
                 body.html=format!("<table style='border:2px solid #226451'><tr><td><a href='https://example.com/synthetic-link'>Visible link</a></td></tr></table><img src='https://example.invalid/pixel.png'><script>document.body.dataset.executed='true'</script>{}",(0..80).map(|i|format!("<p>Scrollable synthetic paragraph {i}</p>")).collect::<String>());
                 s.plain_reading=false;s.reader_dirty=true;s.update_reader();cx.notify();
-                matches!(s.reader,Some(Document::Html(ref text)) if text.contains("<table")&&text.contains("Visible link"))
+                matches!(s.reader,Some(Document::Blitz(ref rendered)) if rendered.source.contains("<table")&&rendered.source.contains("Visible link"))
             }))?;
             anyhow::ensure!(html_ready,"Restricted HTML reader content missing");
             for _ in 0..8{pause(cx).await;}

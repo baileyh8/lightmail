@@ -22,6 +22,7 @@ const VIRTUAL_BYTES: usize = 8 * 1024;
 pub enum Document {
     Markdown(SharedString),
     Html(SharedString),
+    Blitz(Arc<crate::blitz_reader::Rendered>),
     Bilingual(Vec<(SharedString, SharedString)>),
 }
 
@@ -113,6 +114,17 @@ pub fn view(key: &str, document: &Document, images: Images) -> AnyElement {
                 scroll().child(view).into_any_element()
             }
         }
+        Document::Blitz(rendered) => div()
+            .id(format!("reader-blitz:{key}"))
+            .w_full()
+            .h(px(rendered.height))
+            .child(
+                img(ImageSource::Image(rendered.image.clone()))
+                    .id(format!("reader-blitz-image:{key}"))
+                    .w(px(rendered.width))
+                    .h(px(rendered.height)),
+            )
+            .into_any_element(),
         Document::Bilingual(pairs) => {
             let mut rows = div().flex().flex_col().gap_6().w_full().pb_6();
             for (index, (source, target)) in pairs.iter().enumerate() {

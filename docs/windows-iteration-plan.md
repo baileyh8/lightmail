@@ -206,6 +206,8 @@ flowchart LR
 
 HTML 专项后续：已完成 litehtml 的 MSVC 实编、Blitz 的 Windows MSVC 实编（含 blitz-paint）、合成输入检查及用户授权的本机 26 封邮件验证。Blitz DOM 同样本 130 次布局通过，720px 下无横向溢出，600px/360px 各一封；当前 Kit 有两封触发越界崩溃。复杂 HTML 产品问题仍未解决，下一步是 AnyRender 到 GPUI 的绘制适配，见 [排版调研](windows-html-renderer-research.md)。
 
+HTML I7.1 已开始：Windows 产品已接入 Blitz 原文渲染和现有图片下载权限，release 构建与原生验收通过，data 图片权限回归测试通过。当前实现以有界整封图片托管在 GPUI 滚动区，属于过渡适配；选区、链接点击、后台渲染和真实远程图片服务验收仍是 I7.2，完成前不标记为最终阅读器。
+
 | 风险 | 应对 |
 | --- | --- |
 | gpui 0.2.2 到 gpui-pre 0.3.7 的 API 差异 | 逐文件移植；每次提交都保证能编译、测试能通过 |

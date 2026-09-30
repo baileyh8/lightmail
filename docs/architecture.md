@@ -84,6 +84,8 @@ Windows 客户端统一经 `gpui-kit =0.7.0` 使用 GPUI 与组件库。`desktop
 
 原文默认使用简化 HTML（没有 HTML 时回退 Markdown）。Kit TextView 不提供完整 CSS 和复杂邮件表格布局，不能称为原样排版；已知限制与不使用 WebView 的后续方案见 [Windows HTML 阅读器](windows-html-reader.md)。
 
+Windows 原文 HTML 的第一版实验接入 `blitz-dom` / `blitz-html` / `blitz-paint`，GPUI 继续负责窗口和滚动宿主；Blitz shell、Winit 和 WebView 都不进入客户端。图片权限通过核心 `fetch_resource` 进入 Blitz `NetProvider`，默认阻止，用户点击「显示外部图片」后才允许当前正文的网页资源。当前绘制结果仍是有界整封图片，选区、链接命中和后台渲染属于后续阶段。
+
 阅读器不嵌入浏览器。`reader.rs` 用 Kit 的 TextView 渲染核心准备的 Markdown 或受限 HTML（`reader_content`），没有脚本引擎。图片默认显示占位图、不发请求；用户对当前邮件允许后，`images.rs` 通过核心下载（系统代理、同源重定向），单张 8 MiB、每封 32 MiB、最多 64 张，只解码 PNG、JPEG、GIF、WebP 和 BMP，切换邮件即重置。链接只把 http、https 和 mailto 交给系统打开。两端正文、安全策略与导出调用共享 `presentation.rs` / `composition.rs`。
 
 窗口没有系统标题栏。`window_chrome.rs` 自绘最小化、最大化和关闭；按钮区域向 Windows 返回原生命中测试结果，保留贴靠布局和系统菜单。侧栏 Logo、列表标题、阅读工具栏空白处，以及设置和写信弹窗外的遮罩可拖动窗口。

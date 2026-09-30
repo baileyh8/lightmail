@@ -126,6 +126,8 @@ Blitz 的核心由 Stylo（CSS）、Taffy（盒布局）、Parley（文本）组
 
 当前验证仍有边界：没有把 `blitz-paint` 的 AnyRender 命令实际转换为 GPUI 绘制，也没有做真实截图逐像素比较、图片加载重排或完整复制选区。因此下一阶段是 GPUI PaintScene 适配原型，不是直接替换产品阅读器。
 
+当前分支已经完成第一版产品接入：原文 HTML 默认通过 Blitz DOM/Paint 生成受 GPUI 托管的 PNG 阅读面；用户点击「显示外部图片」后，Blitz 的资源提供器调用现有核心 `fetch_resource`，完成图片尺寸重排。默认仍阻止网络资源，data 图片按邮件权限处理。该版本仍是第一阶段适配：绘制结果暂存为整封有界图片，选区和链接命中还没有接回 Blitz DOM，当前渲染会在 reader 更新路径同步执行；正式采用前要把 PaintScene 直接接到 GPUI、把渲染任务彻底移出 UI 状态更新，并补选区/链接。
+
 选择建议：优先实现 Blitz 的 GPUI 绘制适配。litehtml 保留为较小的 fallback/对照方案；只有当 Blitz 的适配成本明显超过预期时才重新考虑 litehtml。仍不需要 WebView。
 
 ## 下一轮实施与退出条件
