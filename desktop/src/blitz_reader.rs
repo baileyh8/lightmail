@@ -14,7 +14,7 @@ use blitz_traits::{
 };
 use gpui_kit::{Image, ImageFormat};
 use lightmail_core::PlatformServices;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DOCUMENT_HEIGHT: f32 = 16_000.;
@@ -30,12 +30,14 @@ pub struct Rendered {
 struct MailNet {
     platform: Arc<dyn PlatformServices>,
     allow_images: bool,
+    allowed_images: HashSet<String>,
 }
 
 impl NetProvider for MailNet {
     fn fetch(&self, _doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
         let url = request.url.to_string();
-        if !self.allow_images {
+        if !self.allow_images || (!url.starts_with("data:") && !self.allowed_images.contains(&url))
+        {
             handler.bytes(url, Bytes::new());
             return;
         }
@@ -75,6 +77,29 @@ fn decode_data_url(mime: &str, payload: &str) -> Option<Vec<u8>> {
     (bytes.len() <= MAX_IMAGE_BYTES).then_some(bytes)
 }
 
+fn image_sources(html: &str) -> HashSet<String> {
+    let mut sources = HashSet::new();
+    let mut cursor = html;
+    while let Some(start) = cursor.to_ascii_lowercase().find("<img") {
+        cursor = &cursor[start..];
+        let Some(end) = cursor.find('>') else { break };
+        let tag = &cursor[..end];
+        let lower = tag.to_ascii_lowercase();
+        if let Some(src) = lower.find("src=") {
+            let value = &tag[src + 4..];
+            if let Some(quote) = value.as_bytes().first().copied().map(char::from) {
+                if matches!(quote, '\'' | '"') {
+                    if let Some(end_quote) = value[1..].find(quote) {
+                        sources.insert(value[1..1 + end_quote].to_string());
+                    }
+                }
+            }
+        }
+        cursor = &cursor[end + 1..];
+    }
+    sources
+}
+
 fn encode_png(mut pixels: Vec<u8>, width: u32, height: u32) -> anyhow::Result<Vec<u8>> {
     // Vello CPU returns premultiplied RGBA. Email readers display against a
     // white page, so flatten alpha before handing bytes to GPUI's decoder.
@@ -105,6 +130,7 @@ pub fn render(
         net_provider: Some(Arc::new(MailNet {
             platform,
             allow_images,
+            allowed_images: image_sources(html),
         })),
         style_threading: StyleThreading::Sequential,
         ..Default::default()
@@ -138,10 +164,13 @@ pub fn render(
 
 #[cfg(test)]
 mod tests {
-    use super::render;
+    use super::{image_sources, render};
     use crate::platform::DesktopPlatform;
-    use std::io::{Read, Write};
     use std::sync::Arc;
+    use std::{
+        io::{Read, Write},
+        time::Duration,
+    };
 
     #[test]
     fn embedded_images_follow_the_message_permission() {
@@ -157,6 +186,7 @@ mod tests {
     fn remote_images_use_the_core_downloader_only_after_opt_in() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
         let pixel = base64::Engine::decode(
             &base64::engine::general_purpose::STANDARD,
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
@@ -164,7 +194,16 @@ mod tests {
         .unwrap();
         let response = pixel.clone();
         let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
+            let (mut socket, _) = (0..100)
+                .find_map(|_| match listener.accept() {
+                    Ok(connection) => Some(connection),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                        None
+                    }
+                    Err(error) => panic!("image fixture accept failed: {error}"),
+                })
+                .expect("image fixture request did not arrive");
             let mut request = [0u8; 2048];
             let _ = socket.read(&mut request);
             write!(
@@ -176,6 +215,7 @@ mod tests {
             socket.write_all(&response).unwrap();
         });
         let html = format!("<html><body><img src='http://{address}/pixel.png'></body></html>");
+        assert!(image_sources(&html).contains(&format!("http://{address}/pixel.png")));
         let platform = Arc::new(DesktopPlatform::default());
         let blocked = render(&html, 720, false, platform.clone()).unwrap();
         let allowed = render(&html, 720, true, platform).unwrap();
