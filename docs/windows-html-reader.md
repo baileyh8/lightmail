@@ -42,4 +42,4 @@
 
 本轮没有引入新的 HTML 引擎；复杂邮件布局仍是明确的未解决项。
 
-后续实编、合成样本和用户授权的本机邮件验证见 [原生 HTML 排版调研](windows-html-renderer-research.md)。已确认 litehtml 的主要排版能力、MSVC 适配缺口及窄视口限制，也发现当前 Kit 对部分真实 HTML 会越界崩溃；调研结果不等同于产品阅读器已替换。
+后续实编、合成样本和用户授权的本机邮件验证见 [原生 HTML 排版调研](windows-html-renderer-research.md)。Blitz 的同样本布局验证已经完成，结果优于 litehtml；下一步验证 AnyRender 到 GPUI 的绘制适配。当前 Kit 对部分真实 HTML 会越界崩溃；调研结果不等同于产品阅读器已替换。

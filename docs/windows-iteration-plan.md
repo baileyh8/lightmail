@@ -204,7 +204,7 @@ flowchart LR
 
 ## 5. 风险
 
-HTML 专项后续：已完成 litehtml 的 MSVC 实编、64 次合成输入检查及用户授权的本机 26 封邮件验证（130 次 litehtml、26 次 Kit 预览）。当前 Kit 有两封触发越界崩溃，复杂 HTML 产品问题仍未解决。下一轮工作、Blitz 对照与采用条件见 [排版调研](windows-html-renderer-research.md)。
+HTML 专项后续：已完成 litehtml 的 MSVC 实编、Blitz 的 Windows MSVC 实编（含 blitz-paint）、合成输入检查及用户授权的本机 26 封邮件验证。Blitz DOM 同样本 130 次布局通过，720px 下无横向溢出，600px/360px 各一封；当前 Kit 有两封触发越界崩溃。复杂 HTML 产品问题仍未解决，下一步是 AnyRender 到 GPUI 的绘制适配，见 [排版调研](windows-html-renderer-research.md)。
 
 | 风险 | 应对 |
 | --- | --- |

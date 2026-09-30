@@ -106,7 +106,27 @@ Blitz 的核心由 Stylo（CSS）、Taffy（盒布局）、Parley（文本）组
 
 其当前 README 将状态定义为 beta，并明确存在缺失功能；主线还固定了 Taffy 和 Parley 的 Git 修订。因此“Rust 原生”不意味着完整兼容或能直接替换 Kit 控件。本轮没有测其 Windows 编译、包体或内存，不能断言它比 litehtml 大多少，也不能以 litehtml 的样本结果代表它。
 
-选择建议：优先把已实编、已验证真实样本的 litehtml 做成 GPUI 原型，解决已知邮件范围；若实际要求超出这个引擎、或坚持更广泛的 CSS 兼容，则将 Blitz 同样本对照设为采用前的必经验证。
+### Blitz 的 Windows 实测
+
+本轮把 `blitz-html + blitz-dom + blitz-paint` 接到一个独立 probe workspace，完全不依赖 `blitz-shell`、Winit、WebView 或网络。固定源码为 Blitz `ed03fe1`、`0.3.0-beta.2`；Stylo、Taffy、Parley 和 AnyRender 均在本机 Rust 1.97 / MSVC 下编译。`blitz-paint` 编译有一个上游 `dead_code` warning（`BackgroundSizeComputeMode::Intrinsic`），没有错误。
+
+布局 probe 使用 `DummyNetProvider`、串行 style resolve、物理视口 360 / 600 / 720px 以及 100% / 150% / 200% DPI；真实缓存 HTML 共 26 封 × 5 组，共 **130 次**。结果：
+
+| Blitz 视口（100%） | 横向溢出 | resolve 中位数 | resolve 最大值 |
+| --- | --- | --- | --- |
+| 360px | 1 / 26 | 2.75ms | 21.31ms |
+| 600px | 1 / 26 | 2.58ms | 6.91ms |
+| 720px | 0 / 26 | 2.59ms | 7.20ms |
+
+26 封真实邮件的表格、嵌套内容、长 URL、中文文本和命中测试都完成；没有失败的 probe check。最大正文布局高度约 5076px。横向溢出的样本是同一封复杂邮件，宽度为 640px；它需要邮件规则预处理或阅读区水平滚动，不能隐藏溢出。
+
+这比 litehtml 的本机结果更接近当前需求：litehtml 在 600px 有 5 封、360px 有 9 封溢出，布局中位数约 20.8ms；Blitz 在同样输入下分别是 1 封、1 封和约 2.6ms。这个差异来自真实运行结果，不是仅根据项目介绍推测。
+
+**推荐路线因此调整为 Blitz DOM + Blitz Paint + GPUI 适配。** 保留 GPUI Kit 作为窗口、控件和应用框架，只接入 Blitz 的 DOM/CSS/layout 和 PaintScene。GPUI 适配器负责把 AnyRender 的 `PaintScene` 命令转成 GPUI quad、path、图片和字体绘制；`blitz-shell` 不纳入依赖。Blitz 的 DOM 已有表格、选择、hit testing 和 `DummyNetProvider`，图片、CSS、字体和链接仍由 Lightmail 的权限与平台服务控制。
+
+当前验证仍有边界：没有把 `blitz-paint` 的 AnyRender 命令实际转换为 GPUI 绘制，也没有做真实截图逐像素比较、图片加载重排或完整复制选区。因此下一阶段是 GPUI PaintScene 适配原型，不是直接替换产品阅读器。
+
+选择建议：优先实现 Blitz 的 GPUI 绘制适配。litehtml 保留为较小的 fallback/对照方案；只有当 Blitz 的适配成本明显超过预期时才重新考虑 litehtml。仍不需要 WebView。
 
 ## 下一轮实施与退出条件
 
