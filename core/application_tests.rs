@@ -198,6 +198,41 @@ fn headless_queue_undo_and_stop_prevent_unwanted_submission() {
 }
 
 #[test]
+fn manual_receiving_keeps_commands_and_queued_mail_alive() {
+    let (_dir, engine, app, _, _) = fixture();
+    let mut account = engine.accounts().unwrap().remove(0);
+    account.provider = "imap".into();
+    account.enabled = false; // No provider connection in this regression test.
+    engine.save_account(account.clone()).unwrap();
+    app.clone().start().unwrap();
+    let mut draft = compose_draft(account, None, None, ComposeMode::New, String::new());
+    draft.to = "synthetic@example.com".into();
+    let queued = crate::platform::runtime()
+        .block_on(app.clone().queue(draft))
+        .unwrap();
+    app.set_automatic_receiving(false).unwrap();
+    assert!(!app.automatic_receiving());
+    assert_eq!(
+        engine
+            .drafts()
+            .unwrap()
+            .iter()
+            .find(|d| d.id == queued.id)
+            .unwrap()
+            .status,
+        "queued"
+    );
+    // A call to stop() here would cancel this manual command as well as the send.
+    crate::platform::runtime()
+        .block_on(app.clone().refresh())
+        .unwrap();
+    app.set_automatic_receiving(true).unwrap();
+    assert!(app.automatic_receiving());
+    app.cancel_queued(queued.id).unwrap();
+    app.stop();
+}
+
+#[test]
 fn translation_configuration_migrates_swift_json_and_rejects_partial_cache() {
     let (_dir, engine, app, _, _) = fixture();
     let c = config();

@@ -58,6 +58,7 @@ pub struct MailApplication {
     workers: Mutex<HashMap<String, Vec<tokio::task::AbortHandle>>>,
     sends: Mutex<HashMap<String, Job>>,
     active: AtomicBool,
+    automatic_receiving: AtomicBool,
     cancellation: Mutex<tokio_util::sync::CancellationToken>,
 }
 impl Drop for MailApplication {
@@ -83,6 +84,7 @@ impl MailApplication {
             workers: Mutex::new(HashMap::new()),
             sends: Mutex::new(HashMap::new()),
             active: AtomicBool::new(true),
+            automatic_receiving: AtomicBool::new(true),
             cancellation: Mutex::new(tokio_util::sync::CancellationToken::new()),
         })
     }
@@ -476,6 +478,31 @@ fn validate_recipients(draft: &Draft) -> Result<()> {
 // Rust-only commands used by the Windows client. They can be exported once the
 // Swift bindings are regenerated; until then macOS keeps its existing calls.
 impl MailApplication {
+    /// Pause only automatic receiving/preloading. Manual commands and outbox
+    /// timers remain live. Rust-only until upstream chooses the Swift UI.
+    pub fn set_automatic_receiving(self: &Arc<Self>, enabled: bool) -> Result<()> {
+        // Serialize with start/stop and account reconciliation. Do not cancel the
+        // application's command token or sends when switching to manual mode.
+        let cancellation = self.cancellation.lock().unwrap();
+        self.automatic_receiving.store(enabled, Ordering::Relaxed);
+        if !enabled {
+            for (_, handles) in self.workers.lock().unwrap().drain() {
+                for handle in handles {
+                    handle.abort();
+                }
+            }
+            Ok(())
+        } else if !cancellation.is_cancelled() {
+            self.launch_workers()
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn automatic_receiving(&self) -> bool {
+        self.automatic_receiving.load(Ordering::Relaxed)
+    }
+
     /// Fetch older remote summaries for a list scope. The core decides which
     /// folders back a scope, so starred mail is fetched where it actually lives.
     pub async fn load_older(
@@ -569,6 +596,9 @@ impl MailApplication {
         self.launch_workers()
     }
     fn launch_workers(self: &Arc<Self>) -> Result<()> {
+        if !self.automatic_receiving.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         for account in self
             .engine
             .accounts()?
