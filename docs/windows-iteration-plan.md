@@ -204,6 +204,8 @@ flowchart LR
 
 ## 5. 风险
 
+HTML 专项后续：已完成 litehtml 的 MSVC 实编、64 次合成输入检查及用户授权的本机 26 封邮件验证（130 次 litehtml、26 次 Kit 预览）。当前 Kit 有两封触发越界崩溃，复杂 HTML 产品问题仍未解决。下一轮工作、Blitz 对照与采用条件见 [排版调研](windows-html-renderer-research.md)。
+
 | 风险 | 应对 |
 | --- | --- |
 | gpui 0.2.2 到 gpui-pre 0.3.7 的 API 差异 | 逐文件移植；每次提交都保证能编译、测试能通过 |
