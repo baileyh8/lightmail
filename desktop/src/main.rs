@@ -11,6 +11,8 @@ mod instance;
 mod platform;
 mod reader;
 mod shortcuts;
+#[cfg(windows)]
+mod tray;
 mod views;
 mod window_chrome;
 fn main() {
@@ -57,6 +59,10 @@ fn main() {
         Ok(lock) => lock,
         Err(error) => {
             let running = error.kind() == std::io::ErrorKind::WouldBlock;
+            #[cfg(windows)]
+            if running && tray::activate_existing(&directory) {
+                return;
+            }
             rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Info)
                 .set_title("轻邮 Lightmail")
@@ -130,6 +136,13 @@ fn main() {
                     let view = cx.new(|cx| {
                         app::MailDesktop::new(engine, root, demo, acceptance, window, cx)
                     });
+                    #[cfg(windows)]
+                    if let Err(error) = tray::attach(&view, window, &directory, cx) {
+                        view.update(cx, |s, cx| {
+                            s.status = format!("托盘不可用，关闭窗口将退出：{error}");
+                            cx.notify();
+                        });
+                    }
                     #[cfg(feature = "acceptance")]
                     if run_acceptance && demo {
                         if let Some(path) = acceptance_path {

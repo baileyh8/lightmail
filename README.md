@@ -130,9 +130,12 @@ cargo test --locked --release -p lightmail-desktop
 # 并在 build/windows-acceptance 里静默安装、卸载刚打好的安装包
 cargo build --locked --release -p lightmail-desktop --features acceptance
 ./scripts/check-windows.ps1   # 加 -SoakReads 1500 另做连续阅读的内存检查
+# 此用户已安装轻邮时使用 -SkipInstaller，避免改写已有安装的注册信息。
 ```
 
 产物：`target/release/Lightmail.exe`。隔离示例：`Lightmail.exe --demo`。Windows 使用 LLM 翻译，不提供 Apple 系统翻译；支持固定 HTTP / SOCKS 系统代理，暂不支持 PAC。
+
+本分支的 Windows 客户端关闭窗口后常驻托盘；点击托盘图标恢复，右键可立即收信、切换自动收信或退出。自动收信默认开启，关闭后仍可手动收信与发信。原文默认采用简化 HTML 阅读，复杂 CSS 和嵌套表格尚不能原样还原，详见 [HTML 阅读器能力与方案](docs/windows-html-reader.md)。
 
 ### 共享核心
 

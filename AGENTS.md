@@ -25,6 +25,7 @@ macOS needs Apple Silicon, macOS 15+, Swift 6+, Rust, and Python 3. Windows need
 - `./scripts/build-windows.ps1`: build the Windows client.
 - `./scripts/package-windows.ps1`: create installer and portable ZIP.
 - `./scripts/check-windows.ps1`: native UI acceptance (build with `--features acceptance` first), then a silent install and uninstall under `build/windows-acceptance`; `-SoakReads N` adds a memory soak.
+- Use `-SkipInstaller` when Lightmail is already installed for this user; a different `/DIR` does not isolate the installer's AppId, shortcut or uninstall registration. `-Executable` and `-OutputDirectory build/...` allow a separate test binary and fixture directory.
 - `bash scripts/package.sh`: generate ZIP and checksums.
 
 ## Architecture Boundaries

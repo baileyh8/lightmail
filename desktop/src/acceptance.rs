@@ -312,12 +312,92 @@ fn blocks_remote_images(images: &crate::reader::Images) -> bool {
         ImageSource::Resource(Resource::Embedded(path)) if path.as_ref() == crate::reader::PLACEHOLDER
     )
 }
+
+#[cfg(windows)]
+async fn tray_lifecycle(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    use crate::tray::acceptance as tray;
+    handle.update(cx, |_, window, _| tray::verify(window))??;
+    handle.update(cx, |_, window, _| tray::action(window, "close"))??;
+    pause(cx).await;
+    handle.update(cx, |_, window, _| {
+        anyhow::ensure!(
+            !tray::visible(window)?,
+            "Close did not hide the resident window"
+        );
+        Ok::<_, anyhow::Error>(())
+    })??;
+    let directory = handle.update(cx, |_, _, cx| view.read(cx).data_root.join("Preview"))?;
+    anyhow::ensure!(
+        crate::tray::activate_existing(&directory),
+        "Existing instance was not found"
+    );
+    pause(cx).await;
+    handle.update(cx, |_, window, _| {
+        anyhow::ensure!(
+            tray::visible(window)?,
+            "Existing instance did not become visible"
+        );
+        Ok::<_, anyhow::Error>(())
+    })??;
+    for enabled in [false, true] {
+        handle.update(cx, |_, window, _| tray::action(window, "automatic"))??;
+        pause(cx).await;
+        handle.update(cx, |_, _, cx| {
+            let s = view.read(cx);
+            anyhow::ensure!(
+                s.service.automatic_receiving() == enabled,
+                "Tray did not switch receiving mode"
+            );
+            anyhow::ensure!(
+                s.engine
+                    .setting("windows-automatic-receiving".into())?
+                    .as_deref()
+                    == Some(if enabled { "true" } else { "false" }),
+                "Receiving preference did not persist"
+            );
+            Ok::<_, anyhow::Error>(())
+        })??;
+    }
+    handle.update(cx, |_, window, _| tray::action(window, "receive"))??;
+    for _ in 0..40 {
+        pause(cx).await;
+        if handle.update(cx, |_, _, cx| {
+            view.read(cx)
+                .actions
+                .iter()
+                .any(|action| action == "refresh")
+        })? {
+            break;
+        }
+    }
+    handle.update(cx, |_, _, cx| {
+        anyhow::ensure!(
+            view.read(cx)
+                .actions
+                .iter()
+                .any(|action| action == "refresh"),
+            "Tray did not call shared refresh"
+        );
+        Ok::<_, anyhow::Error>(())
+    })??;
+    handle.update(cx, |_, window, _| tray::action(window, "shell-restart"))??;
+    pause(cx).await;
+    handle.update(cx, |_, window, _| tray::verify(window))??;
+    Ok(())
+}
+
 pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: &mut App) {
     let handle = window.window_handle();
     cx.spawn(async move|cx|{
         let result=async {
             // Allow the actual platform window to finish its first layout.
             for _ in 0..8{pause(cx).await;}
+            #[cfg(windows)]
+            tray_lifecycle(&view,handle,cx).await?;
             click(&view,handle,"message-0",true,cx)?;
             for _ in 0..120 {
                 pause(cx).await;
@@ -386,12 +466,15 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Opt-in long run for the memory curve; synthetic demo mail only.
             let reads=std::env::var("LIGHTMAIL_SOAK_READS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0);
             if reads>0 {soak(&view,handle,&path,reads,cx).await?;}
-            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
+            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
         }.await;
         let report=match result{Ok(v)=>v,Err(e)=>serde_json::json!({"passed":false,"error":format!("{e:#}")})};
         let _=std::fs::create_dir_all(&path);let _=std::fs::write(path.join("native-acceptance.json"),report.to_string());
         // Keep the final window briefly for the CI screenshot collector, then exit normally.
         for _ in 0..20 {pause(cx).await;}
+        #[cfg(windows)]
+        let _=handle.update(cx,|_,window,_|crate::tray::acceptance::action(window,"exit"));
+        #[cfg(not(windows))]
         let _=cx.update(|cx|cx.quit());
     }).detach();
 }

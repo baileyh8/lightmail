@@ -10,6 +10,16 @@ Data: %LOCALAPPDATA%\Bailey\Lightmail\data\Mail (exact path may depend on OS con
 Credentials: Windows Credential Manager; removing an account clears its credentials.
 Uninstall preserves user mail, drafts and settings.
 
+Closing the window keeps Lightmail running in the notification area.
+Click its tray icon to reopen; right-click for Open, Receive now,
+Automatic receiving (checked by default), and Exit. Manual receiving
+leaves sending and other commands available. The preference persists.
+Windows may put new tray icons inside the overflow menu near the clock.
+
+HTML mail uses the native simplified HTML reader by default. It supports
+common content formatting, not full CSS or faithful nested mail layouts.
+Use the reading menu to switch to clean Markdown reading when needed.
+
 Gmail: configure your Google OAuth Desktop client, then sign in in your browser.
 QQ / 163: enable IMAP/SMTP in webmail; use the generated client authorization code.
 Translation: configure an OpenAI Chat Completions compatible service.

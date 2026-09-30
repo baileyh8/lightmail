@@ -19,7 +19,7 @@
 边界约定：
 
 - 业务规则只写在 Rust 核心。GPUI 层只负责选择、布局、对话框和系统交互，与 `AGENTS.md` 的约定一致。Windows 需要的新能力加到 `core/`，先以 Rust 公开接口提供，不加 `#[uniffi::export]`，这样不会让已提交的 Swift 绑定过期。
-- 不改 Mac 专属文件：`Sources/Lightmail/`、`Generated/`、`Resources/`、`Package.swift`。核心里的行为修复会同时作用于 Mac，但导出接口的签名保持不变，每项修复都会在提交说明里写明对 Mac 的影响。
+- 不改 Mac 专属文件：`Sources/Lightmail/`、`Generated/`、`Resources/Info.plist`、`Resources/AppIcon.icns`、`Package.swift`。Windows 图标由现有 artwork 转出，另存 `Resources/AppIcon.ico`。核心里的行为修复会同时作用于 Mac，但导出接口的签名保持不变，每项修复都会在提交说明里写明对 Mac 的影响。
 - 需要改导出接口、重新生成 Swift 绑定的事项（例如类型化错误），放到 I6，作为给上游的提议。
 
 ## 2. 问题清单与归属
@@ -194,12 +194,20 @@ flowchart LR
 
 以上各项，连同本分支已对 Mac 生效的核心行为变化和发版时要一起更新的文档，已整理在 [windows-upstream-proposals.md](windows-upstream-proposals.md)。
 
+### I7 真实测试反馈：图标、托盘与 HTML（2026-09-30）
+
+- Windows 图标：从现有 `AppIcon.icns` 生成多尺寸 `AppIcon.ico`，嵌入 EXE，配置安装程序与快捷方式；运行时设置大小窗口图标。
+- 托盘：原生 Shell 图标和右键菜单「打开轻邮 / 立即收信 / 自动收信 / 退出轻邮」。关闭或 Alt+F4 隐藏窗口，服务继续运行；再次启动同一数据目录恢复原窗口；处理 Explorer 重建与退出清理。
+- 收信开关：共享 Rust 新增仅控制后台监控/预加载的接口；不调用整体 `stop()`，不影响待发邮件与手动命令。偏好仅供 Windows 使用。
+- 验收补上 EXE 资源、大小窗口图标、Shell 注册、隐藏/恢复、立即收信、偏好持久化和模拟 Explorer 重建。`check-windows.ps1` 支持 `-SkipInstaller`，已有安装时拒绝安装验收。
+- HTML：默认改走已有 HTML 分支，无 HTML 回退 Markdown。**复杂布局仍未修复**；不再把 Kit TextView 称为原始排版，详见 [核对结果与下一轮验证计划](windows-html-reader.md)。独立 litehtml 阅读器是建议验证的方向，本轮尚未接入。
+
 ## 5. 风险
 
 | 风险 | 应对 |
 | --- | --- |
 | gpui 0.2.2 到 gpui-pre 0.3.7 的 API 差异 | 逐文件移植；每次提交都保证能编译、测试能通过 |
-| Kit 的 HTML 渲染保真度低于 WebView2 | 默认 Markdown 阅读，可切换受限 HTML；把已知差异写进文档 |
+| Kit 的 HTML 渲染缺少复杂邮件布局能力 | 当前默认简化 HTML，可切换 Markdown；已明确不保证原样显示，下一轮按 HTML 阅读器文档验证独立排版引擎 |
 | GPUI 图片加载没有字节上限的钩子 | 远程图片只在用户逐封允许后加载；以后可以换成自建的带上限下载器 |
 | Kit 可能需要比默认 stable 更新的 Rust | 构建脚本和 CI 固定到验证过的版本 |
 | 上游继续修改 `desktop/` | 定期 rebase；核心修复单独提交，方便拆成上游 PR |

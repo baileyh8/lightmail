@@ -4181,6 +4181,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "directories",
+ "embed-resource",
  "futures-util",
  "gpui-kit",
  "keyring",
@@ -4192,6 +4193,7 @@ dependencies = [
  "tempfile",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
  "winreg",
 ]
 

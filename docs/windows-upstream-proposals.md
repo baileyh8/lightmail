@@ -7,7 +7,7 @@
 | 日期 | 2026-09-30 |
 | 相关 | [迭代计划](windows-iteration-plan.md) I6，问题 #15–18 |
 
-本分支只改 `core/` 和 `desktop/`，没有碰 Swift、生成的绑定和资源文件。导出给 Swift 的接口签名一个都没变，所以提交里的 Swift 绑定不用重新生成。下面几件事需要改导出接口或 Swift 代码，本分支没有做，整理出来供你决定。
+本分支修改共享核心、Windows 客户端及相关构建、打包、文档，没有改 Swift、生成的绑定和 Mac 专属资源；另外从现有图标转出了 Windows 的 `Resources/AppIcon.ico`。导出给 Swift 的接口签名没有变化，所以提交里的 Swift 绑定不用重新生成。下面几件事需要改导出接口或 Swift 代码，整理出来供你决定。
 
 ## 1. 已经对 Mac 生效的核心行为变化
 
@@ -33,6 +33,7 @@ Mac 端能看到的变化只有第一条：删除这类账号会收到错误提�
 | `DraftState` 及其 `editable`、`withdrawable`、`retryable`、`resolvable`、`deletable`、`in_outbox` | `core/composition.rs` | Swift 里按 `status` 字符串判断能否编辑、撤销、重试、删除的地方 |
 | `MailApplication::resolve_delivery(id, delivered)` | `core/application.rs` | Mac 目前没有处理 `delivery_unknown` 的入口，这类邮件会一直留在待发送里。它只改状态，不会发送 |
 | `provider_color(provider)` | `core/presentation.rs` | 两端各自写的新账号默认颜色 |
+| `MailApplication::set_automatic_receiving(enabled)` / `automatic_receiving()` | `core/application.rs` | 仅暂停后台收信和预加载，保留手动操作及发件计时器。Windows 托盘使用，默认开启；现有 Mac 行为不变 |
 
 导出时 `load_older` 按现有惯例做成 async，经 `run()` 执行，future 被丢弃时会中止任务。导出后需要重新生成绑定（`bash scripts/build.sh`），再把 `loadOlder` 的编排换成一次调用。`reader_content`、`fetch_resource` 是给原生阅读器用的，Mac 用 WKWebView，不需要导出。
 

@@ -80,6 +80,10 @@ macOS 关闭窗口后进程可继续同步；`⌘Q` 完全退出后不收信。�
 
 Windows 客户端统一经 `gpui-kit =0.7.0` 使用 GPUI 与组件库。`desktop/src/app.rs` 把交互转换成共享命令；账号、文件夹、草稿和邮件列表在后台线程读取，只采用最新一次读取的结果。`events.rs` 合并唤醒，避免通知无限排队。`platform.rs` 只访问 Credential Manager 和固定系统代理；超过单条凭据上限的值分片保存。
 
+`tray.rs` 管理 Windows 托盘、窗口图标、恢复已有实例与退出生命周期。关闭窗口隐藏到托盘；退出时保存草稿并停止服务。托盘立即收信调用 `MailApplication::refresh`；自动收信开关调用 Rust-only 的 `set_automatic_receiving`，只停后台监控/预加载，不取消手动命令和发送队列。Windows 偏好存于 `windows-automatic-receiving`，Mac 调用与默认行为不变。
+
+原文默认使用简化 HTML（没有 HTML 时回退 Markdown）。Kit TextView 不提供完整 CSS 和复杂邮件表格布局，不能称为原样排版；已知限制与不使用 WebView 的后续方案见 [Windows HTML 阅读器](windows-html-reader.md)。
+
 阅读器不嵌入浏览器。`reader.rs` 用 Kit 的 TextView 渲染核心准备的 Markdown 或受限 HTML（`reader_content`），没有脚本引擎。图片默认显示占位图、不发请求；用户对当前邮件允许后，`images.rs` 通过核心下载（系统代理、同源重定向），单张 8 MiB、每封 32 MiB、最多 64 张，只解码 PNG、JPEG、GIF、WebP 和 BMP，切换邮件即重置。链接只把 http、https 和 mailto 交给系统打开。两端正文、安全策略与导出调用共享 `presentation.rs` / `composition.rs`。
 
 窗口没有系统标题栏。`window_chrome.rs` 自绘最小化、最大化和关闭；按钮区域向 Windows 返回原生命中测试结果，保留贴靠布局和系统菜单。侧栏 Logo、列表标题、阅读工具栏空白处，以及设置和写信弹窗外的遮罩可拖动窗口。

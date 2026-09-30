@@ -787,7 +787,7 @@ impl MailDesktop {
                 )
                 .separator()
                 .item(
-                    PopupMenuItem::new("切换原始排版 / 清爽阅读").on_click(move |_, _, cx| {
+                    PopupMenuItem::new("切换简化 HTML / 清爽阅读").on_click(move |_, _, cx| {
                         let _ = layout.update(cx, |s, cx| {
                             s.plain_reading = !s.plain_reading;
                             s.mode = ExportMode::Original;

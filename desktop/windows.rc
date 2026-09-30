@@ -1,0 +1,2 @@
+// The same icon is used by Explorer, shortcuts, the taskbar and the tray.
+1 ICON "../Resources/AppIcon.ico"

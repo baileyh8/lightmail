@@ -237,7 +237,7 @@ impl MailDesktop {
             focus,
             data_root,
             focus_reading: false,
-            plain_reading: true,
+            plain_reading: false,
             adding_account: false,
             extra_recipients: false,
             probes: HashMap::new(),
@@ -309,6 +309,16 @@ impl MailDesktop {
         let first = read_lists(&app.engine, app.query(0), None);
         app.apply_lists(first, true);
         app.load_translation_config(window, cx);
+        if app
+            .engine
+            .setting("windows-automatic-receiving".into())
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("false")
+        {
+            let _ = app.service.set_automatic_receiving(false);
+        }
         if !demo {
             if let Err(e) = app.service.clone().start() {
                 app.status = e.to_string();
@@ -524,6 +534,24 @@ impl MailDesktop {
             });
         })
         .detach();
+    }
+    #[cfg(windows)]
+    pub fn set_automatic_receiving(&mut self, enabled: bool) -> Result<()> {
+        self.engine
+            .set_setting("windows-automatic-receiving".into(), enabled.to_string())?;
+        if let Err(error) = self.service.set_automatic_receiving(enabled) {
+            // Restore the setting if starting workers failed.
+            let _ = self
+                .engine
+                .set_setting("windows-automatic-receiving".into(), (!enabled).to_string());
+            let _ = self.service.set_automatic_receiving(!enabled);
+            return Err(error);
+        }
+        if !enabled {
+            self.syncing.clear();
+        }
+        self.record("automatic-receiving");
+        Ok(())
     }
     pub fn select(&mut self, id: String, cx: &mut Context<Self>) {
         let Some(message) = self.messages.iter().find(|m| m.id == id).cloned() else {
@@ -1434,6 +1462,31 @@ mod tests {
         // Nothing has run yet: the welcome page must not flash for existing accounts.
         view.read_with(cx, |s, _| {
             assert_eq!((s.accounts.len(), s.messages.len()), (4, 7));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn original_mail_uses_html_and_plain_mail_still_has_a_fallback(cx: &mut TestAppContext) {
+        let (_root, _window, view) = open(cx);
+        view.update(cx, |s, _| {
+            s.body = Some(lightmail_core::MailBody {
+                message_id: "synthetic-html".into(),
+                text: "plain alternative".into(),
+                markdown: "markdown alternative".into(),
+                html: "<h2>Invoice</h2><p><strong>Total:</strong> 20.00</p>".into(),
+                attachments: vec![],
+                content_hash: "synthetic".into(),
+            });
+            s.reader_dirty = true;
+            s.update_reader();
+            assert!(matches!(s.reader, Some(crate::reader::Document::Html(_))));
+            s.body.as_mut().unwrap().html.clear();
+            s.reader_dirty = true;
+            s.update_reader();
+            assert!(matches!(
+                s.reader,
+                Some(crate::reader::Document::Markdown(_))
+            ));
         });
     }
 

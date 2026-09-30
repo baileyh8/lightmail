@@ -2,6 +2,9 @@
 //! the core prepared; there is no browser engine, so nothing in a message runs.
 //! Images stay placeholders unless allowed for the current message, and links
 //! leave the app only for http, https and mailto.
+//! TextView is a content renderer, not a CSS layout engine. Nested mail tables,
+//! colspan/rowspan and stylesheet layouts are not faithfully rendered; see
+//! docs/windows-html-reader.md before extending this adapter.
 use gpui_kit::{base::TextView, prelude::FluentBuilder as _, *};
 use lightmail_core::ReaderContent;
 use std::sync::Arc;
