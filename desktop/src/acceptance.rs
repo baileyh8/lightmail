@@ -424,11 +424,22 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             let html_ready=handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{
                 let body=s.body.as_mut().unwrap();
                 body.html=format!("<table style='border:2px solid #226451'><tr><td><a href='https://example.com/synthetic-link'>Visible link</a></td></tr></table><img src='https://example.invalid/pixel.png'><script>document.body.dataset.executed='true'</script>{}",(0..80).map(|i|format!("<p>Scrollable synthetic paragraph {i}</p>")).collect::<String>());
-                s.plain_reading=false;s.reader_dirty=true;s.update_reader();cx.notify();
-                matches!(s.reader,Some(Document::Blitz(ref rendered)) if rendered.source.contains("<table")&&rendered.source.contains("Visible link"))
+                s.plain_reading=false;s.reader_dirty=true;s.update_reader(cx);cx.notify();
+                true
             }))?;
             anyhow::ensure!(html_ready,"Restricted HTML reader content missing");
-            for _ in 0..8{pause(cx).await;}
+            for _ in 0..80 {
+                pause(cx).await;
+                if handle.update(cx,|_,_,cx|{
+                    let s = view.read(cx);
+                    Ok::<_,anyhow::Error>(matches!(s.reader.as_ref(),Some(Document::Blitz(rendered)) if rendered.source.contains("<table")&&rendered.source.contains("Visible link")))
+                })?? { break; }
+            }
+            handle.update(cx,|_,_,cx|{
+                let s = view.read(cx);
+                anyhow::ensure!(matches!(s.reader.as_ref(),Some(Document::Blitz(rendered)) if rendered.source.contains("<table")&&rendered.source.contains("Visible link")),"Blitz reader did not finish restricted HTML");
+                Ok::<_,anyhow::Error>(())
+            })??;
             handle.update(cx,|_,_,cx|{
                 let s=view.read(cx);
                 anyhow::ensure!(blocks_remote_images(&s.image_policy()),"Remote image loaded without permission");

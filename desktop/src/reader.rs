@@ -114,17 +114,39 @@ pub fn view(key: &str, document: &Document, images: Images) -> AnyElement {
                 scroll().child(view).into_any_element()
             }
         }
-        Document::Blitz(rendered) => div()
-            .id(format!("reader-blitz:{key}"))
-            .w_full()
-            .h(px(rendered.height))
-            .child(
-                img(ImageSource::Image(rendered.image.clone()))
-                    .id(format!("reader-blitz-image:{key}"))
-                    .w(px(rendered.width))
-                    .h(px(rendered.height)),
-            )
-            .into_any_element(),
+        Document::Blitz(rendered) => {
+            let mut surface = div()
+                .id(format!("reader-blitz:{key}"))
+                .relative()
+                .w_full()
+                .h(px(rendered.height))
+                .child(
+                    img(ImageSource::Image(rendered.image.clone()))
+                        .id(format!("reader-blitz-image:{key}"))
+                        .w(px(rendered.width))
+                        .h(px(rendered.height)),
+                );
+            for (index, link) in rendered.links.iter().enumerate() {
+                let href = link.href.clone();
+                surface = surface.child(
+                    div()
+                        .id(format!("reader-blitz-link:{key}:{index}"))
+                        .absolute()
+                        .left(px(link.x))
+                        .top(px(link.y))
+                        .w(px(link.width))
+                        .h(px(link.height))
+                        .bg(rgba(0x00000000))
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| {
+                            if allowed_link(&href) {
+                                cx.open_url(&href);
+                            }
+                        }),
+                );
+            }
+            scroll().child(surface).into_any_element()
+        }
         Document::Bilingual(pairs) => {
             let mut rows = div().flex().flex_col().gap_6().w_full().pb_6();
             for (index, (source, target)) in pairs.iter().enumerate() {

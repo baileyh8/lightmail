@@ -1748,7 +1748,7 @@ impl Render for MailDesktop {
             self.clear_secrets = false;
         }
         self.service.set_active(window.is_window_active());
-        self.update_reader();
+        self.update_reader(cx);
         let settings = matches!(
             self.page,
             Page::Accounts | Page::Translation | Page::Storage

@@ -25,6 +25,16 @@ pub struct Rendered {
     pub height: f32,
     #[allow(dead_code)]
     pub source: String,
+    pub links: Vec<LinkHit>,
+}
+
+#[derive(Clone)]
+pub struct LinkHit {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub href: String,
 }
 
 struct MailNet {
@@ -147,6 +157,26 @@ pub fn render(
         anyhow::bail!("邮件正文超过原生 HTML 阅读上限");
     }
     let height = height.ceil().max(640.) as u32;
+    let links = document
+        .query_selector_all("a")
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|id| {
+            let href = document
+                .get_node(id)?
+                .attr(blitz_dom::local_name!("href"))?
+                .to_string();
+            let rect = document.get_client_bounding_rect(id)?;
+            (rect.width > 0. && rect.height > 0.).then_some(LinkHit {
+                x: rect.x as f32,
+                y: rect.y as f32,
+                width: rect.width as f32,
+                height: rect.height as f32,
+                href,
+            })
+        })
+        .collect();
     let mut renderer = VelloCpuImageRenderer::new(width, height);
     let mut pixels = Vec::new();
     renderer.render_to_vec(
@@ -159,6 +189,7 @@ pub fn render(
         width: width as f32,
         height: height as f32,
         source: html.to_string(),
+        links,
     })
 }
 

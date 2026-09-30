@@ -124,6 +124,8 @@ pub struct MailDesktop {
     generation: u64,
     translation_generation: u64,
     body_task: Option<Task<()>>,
+    blitz_task: Option<Task<()>>,
+    blitz_generation: u64,
     translation_task: Option<Task<()>>,
     search_task: Option<Task<()>>,
     lists_task: Option<Task<()>>,
@@ -296,6 +298,8 @@ impl MailDesktop {
             generation: 0,
             translation_generation: 0,
             body_task: None,
+            blitz_task: None,
+            blitz_generation: 0,
             translation_task: None,
             search_task: None,
             lists_task: None,
@@ -1399,12 +1403,15 @@ impl MailDesktop {
     /// Prepares reader content when the body, translation or mode changed. The
     /// core validates translations and bounds Markdown work; rendering then
     /// only clones shared strings.
-    pub fn update_reader(&mut self) {
+    pub fn update_reader(&mut self, cx: &mut Context<Self>) {
         if !self.reader_dirty {
             return;
         }
         self.reader_dirty = false;
+        self.blitz_generation = self.blitz_generation.wrapping_add(1);
+        self.blitz_task = None;
         self.reader = None;
+        self.loading = false;
         let Some(body) = &self.body else {
             return;
         };
@@ -1415,19 +1422,36 @@ impl MailDesktop {
             !self.plain_reading,
         ) {
             Ok(lightmail_core::ReaderContent::Html(html)) if !self.plain_reading => {
-                match crate::blitz_reader::render(&html, 720, self.images, self.platform.clone()) {
-                    Ok(rendered) => {
-                        self.reader = Some(crate::reader::Document::Blitz(Arc::new(rendered)));
-                        self.reader_error = None;
-                    }
-                    Err(error) => {
-                        // Keep the old reader as a safe fallback while the
-                        // native engine is still being integrated.
-                        self.reader = Some(crate::reader::Document::Html(html.into()));
-                        self.status = format!("原生 HTML 阅读器回退：{error}");
-                        self.reader_error = None;
-                    }
-                }
+                let generation = self.blitz_generation;
+                let allow_images = self.images;
+                let platform = self.platform.clone();
+                self.loading = true;
+                self.blitz_task = Some(cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_spawn(async move {
+                            crate::blitz_reader::render(&html, 720, allow_images, platform)
+                        })
+                        .await;
+                    let _ = this.update(cx, |s, cx| {
+                        if s.blitz_generation != generation {
+                            return;
+                        }
+                        s.loading = false;
+                        match result {
+                            Ok(rendered) => {
+                                s.reader = Some(crate::reader::Document::Blitz(Arc::new(rendered)));
+                                s.reader_error = None;
+                            }
+                            Err(error) => {
+                                s.status = format!("原生 HTML 阅读器回退：{error}");
+                                s.reader_error = None;
+                            }
+                        }
+                        s.record("reader-render");
+                        cx.notify();
+                    });
+                }));
+                return;
             }
             Ok(content) => {
                 self.reader = Some(content.into());
@@ -1482,26 +1506,27 @@ mod tests {
 
     #[gpui_kit::test]
     fn original_mail_uses_html_and_plain_mail_still_has_a_fallback(cx: &mut TestAppContext) {
-        let (_root, _window, view) = open(cx);
-        view.update(cx, |s, _| {
-            s.body = Some(lightmail_core::MailBody {
-                message_id: "synthetic-html".into(),
-                text: "plain alternative".into(),
-                markdown: "markdown alternative".into(),
-                html: "<h2>Invoice</h2><p><strong>Total:</strong> 20.00</p>".into(),
-                attachments: vec![],
-                content_hash: "synthetic".into(),
+        let (_root, window, view) = open(cx);
+        let _ = cx.update_window(window, |_, _, cx| {
+            view.update(cx, |s, cx| {
+                s.body = Some(lightmail_core::MailBody {
+                    message_id: "synthetic-html".into(),
+                    text: "plain alternative".into(),
+                    markdown: "markdown alternative".into(),
+                    html: "<h2>Invoice</h2><p><strong>Total:</strong> 20.00</p>".into(),
+                    attachments: vec![],
+                    content_hash: "synthetic".into(),
+                });
+                s.reader_dirty = true;
+                s.update_reader(cx);
+                s.body.as_mut().unwrap().html.clear();
+                s.reader_dirty = true;
+                s.update_reader(cx);
+                assert!(matches!(
+                    s.reader,
+                    Some(crate::reader::Document::Markdown(_))
+                ));
             });
-            s.reader_dirty = true;
-            s.update_reader();
-            assert!(matches!(s.reader, Some(crate::reader::Document::Blitz(_))));
-            s.body.as_mut().unwrap().html.clear();
-            s.reader_dirty = true;
-            s.update_reader();
-            assert!(matches!(
-                s.reader,
-                Some(crate::reader::Document::Markdown(_))
-            ));
         });
     }
 

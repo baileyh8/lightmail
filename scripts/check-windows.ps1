@@ -45,9 +45,10 @@ public static class WindowCapture {
 '@
 function Capture($process, $name) {
     $process.Refresh()
-    if ($process.MainWindowHandle -eq [IntPtr]::Zero) { return }
+    $handle = [WindowCapture]::FindAppWindow([uint32]$process.Id)
+    if ($handle -eq [IntPtr]::Zero) { return }
     $rect = New-Object WindowCapture+Rect
-    if (-not [WindowCapture]::GetWindowRect($process.MainWindowHandle, [ref]$rect)) { return }
+    if (-not [WindowCapture]::GetWindowRect($handle, [ref]$rect)) { return }
     $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
     if ($width -le 0 -or $height -le 0) { return }
     $bitmap = New-Object System.Drawing.Bitmap($width, $height)
@@ -56,14 +57,15 @@ function Capture($process, $name) {
     # borders included), so another window above it never enters the evidence.
     try {
         $hdc = $graphics.GetHdc()
-        try { $rendered = [WindowCapture]::PrintWindow($process.MainWindowHandle, $hdc, 2) } finally { $graphics.ReleaseHdc($hdc) }
+        try { $rendered = [WindowCapture]::PrintWindow($handle, $hdc, 2) } finally { $graphics.ReleaseHdc($hdc) }
         if ($rendered) { $bitmap.Save((Join-Path $root "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png) }
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
 function CheckReaderPixels($process, $name, $report) {
     $geometry = Get-Content "$report/reader-geometry.json" -Raw | ConvertFrom-Json
     $origin = New-Object WindowCapture+Point; $rect = New-Object WindowCapture+Rect
-    if (-not [WindowCapture]::ClientToScreen($process.MainWindowHandle, [ref]$origin) -or -not [WindowCapture]::GetWindowRect($process.MainWindowHandle, [ref]$rect)) { throw 'Reader screen bounds unavailable' }
+    $handle = [WindowCapture]::FindAppWindow([uint32]$process.Id)
+    if ($handle -eq [IntPtr]::Zero -or -not [WindowCapture]::ClientToScreen($handle, [ref]$origin) -or -not [WindowCapture]::GetWindowRect($handle, [ref]$rect)) { throw 'Reader screen bounds unavailable' }
     $bitmap = [System.Drawing.Bitmap]::new((Join-Path $root "$name.png"))
     try {
         $left = [int]($origin.X - $rect.Left + $geometry.x * $geometry.scale) + 8
