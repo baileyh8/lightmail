@@ -1,3 +1,5 @@
+use anyrender::ImageRenderer;
+use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{BaseDocument, DocumentConfig, NodeId, StyleThreading};
 use blitz_html::HtmlDocument;
 use blitz_traits::{
@@ -145,11 +147,75 @@ fn probe(
     )
 }
 
+fn render_png(
+    name: &str,
+    html: &str,
+    width: u32,
+    height: u32,
+    output: &Path,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let config = DocumentConfig {
+        viewport: Some(Viewport::new(width, height, 1.0, ColorScheme::Light)),
+        net_provider: Some(Arc::new(DummyNetProvider)),
+        style_threading: StyleThreading::Sequential,
+        ..Default::default()
+    };
+    let mut doc = HtmlDocument::from_html(html, config);
+    doc.resolve(0.0);
+    let root = doc.root_element().final_layout();
+    let document_height = root.size.height.max(root.scrollable_overflow_rect.bottom);
+    if !document_height.is_finite() || document_height > 16_000. {
+        return Err("Document exceeds the bounded screenshot height".into());
+    }
+    let capture_height = (document_height.ceil() as u32 + 1).max(height);
+    let mut renderer = VelloCpuImageRenderer::new(width, capture_height);
+    let mut pixels = Vec::new();
+    renderer.render_to_vec(
+        |scene| blitz_paint::paint_scene(scene, &mut doc, 1.0, width, capture_height, 0, 0),
+        &mut pixels,
+    );
+    // Vello emits premultiplied RGBA. Composite onto the reader's white canvas
+    // before encoding PNG; otherwise transparent page margins look black.
+    for pixel in pixels.chunks_exact_mut(4) {
+        let background = 255u16 - pixel[3] as u16;
+        for channel in &mut pixel[..3] {
+            *channel = (*channel as u16 + background).min(255) as u8;
+        }
+        pixel[3] = 255;
+    }
+    let path = output.join(format!("{name}-{width}.png"));
+    image::save_buffer(
+        &path,
+        &pixels[..(width * height * 4) as usize],
+        width,
+        height,
+        image::ColorType::Rgba8,
+    )?;
+    let full_path = output.join(format!("{name}-{width}-full.png"));
+    image::save_buffer(
+        &full_path,
+        &pixels,
+        width,
+        capture_height,
+        image::ColorType::Rgba8,
+    )?;
+    Ok(
+        json!({"sample":name,"width":width,"height":height,"path":path.to_string_lossy(),
+            "fullPath":full_path.to_string_lossy(),"captureHeight":capture_height,
+            "rootHeight":doc.root_element().final_layout().size.height,
+            "renderer":"Blitz Paint / AnyRender Vello CPU", "remoteImages":false}),
+    )
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (output, sources): (&Path, Vec<(String, String)>);
     let mut owned = Vec::new();
-    if args.first().is_some_and(|v| v == "--private") {
+    let render = args.first().is_some_and(|v| v == "--private-render");
+    if args
+        .first()
+        .is_some_and(|v| v == "--private" || v == "--private-render")
+    {
         output = Path::new(args.get(2).ok_or("Pass private input and output")?);
         let directory = Path::new(args.get(1).unwrap());
         for path in std::fs::read_dir(directory)?
@@ -188,6 +254,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ];
     }
     std::fs::create_dir_all(output)?;
+    if render {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        if !output
+            .canonicalize()?
+            .starts_with(workspace.join("build").canonicalize()?)
+        {
+            return Err("Private screenshots must stay under the ignored build directory".into());
+        }
+        if sources.len() < 20 {
+            return Err("Need at least 20 cached HTML samples".into());
+        }
+        let mut screenshots = Vec::new();
+        for (index, (name, html)) in sources.iter().take(20).enumerate() {
+            screenshots.push(render_png(
+                &format!("{:02}-{}", index + 1, name),
+                html,
+                720,
+                640,
+                output,
+            )?);
+        }
+        std::fs::write(
+            output.join("render-manifest.json"),
+            serde_json::to_vec_pretty(&screenshots)?,
+        )?;
+        println!("Blitz rendered {} private samples", screenshots.len());
+        return Ok(());
+    }
     let mut results = Vec::new();
     for (name, html) in sources {
         for (width, scale) in [(360, 1.), (600, 1.), (720, 1.), (720, 1.5), (720, 2.)] {
