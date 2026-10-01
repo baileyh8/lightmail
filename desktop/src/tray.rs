@@ -333,7 +333,8 @@ pub fn attach(
                 .update(cx, |s, cx| match command {
                     Command::Open => {
                         unsafe {
-                            ShowWindowAsync(
+                            // This command runs on the window's own UI thread.
+                            ShowWindow(
                                 tray.hwnd,
                                 if IsIconic(tray.hwnd) != 0 {
                                     SW_RESTORE

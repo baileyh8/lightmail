@@ -202,17 +202,21 @@ flowchart LR
 - 验收补上 EXE 资源、大小窗口图标、Shell 注册、隐藏/恢复、立即收信、偏好持久化和模拟 Explorer 重建。`check-windows.ps1` 支持 `-SkipInstaller`，已有安装时拒绝安装验收。
 - HTML：默认改走已有 HTML 分支，无 HTML 回退 Markdown。**复杂布局仍未修复**；不再把 Kit TextView 称为原始排版，详见 [核对结果与下一轮验证计划](windows-html-reader.md)。独立 litehtml 阅读器是建议验证的方向，本轮尚未接入。
 
+### I7.2 原生阅读器基础交互（2026-10-02）
+
+继续 GPUI Kit + Blitz。已实现实际宽度/DPI、横向滚动、中文拖选/复制、按布局顺序处理跨表格选区、异步图片重排与解码像素预算，修复托盘隐藏后唤醒。20 封真实缓存邮件的 180 组产品 worker 检查通过；Windows 24 项回归与核心 56 项通过。原生窗口验收、合成数据连续阅读及验证边界见 [完整迭代记录](windows-blitz-reader-iteration.md)。
+
+整封 PNG 仍有尺寸预算，超限使用 Markdown；分块绘制、正文可访问性和多屏/物理键盘验收列为后续，不据此标记完整浏览器兼容能力已完成。
+
 ## 5. 风险
 
-HTML 专项后续：已完成 litehtml 的 MSVC 实编、Blitz 的 Windows MSVC 实编（含 blitz-paint）、合成输入检查及用户授权的本机 26 封邮件验证。Blitz DOM 同样本 130 次布局通过，720px 下无横向溢出，600px/360px 各一封；当前 Kit 有两封触发越界崩溃。复杂 HTML 产品问题仍未解决，下一步是 AnyRender 到 GPUI 的绘制适配，见 [排版调研](windows-html-renderer-research.md)。
-
-HTML I7.1 已开始：Windows 产品已接入 Blitz 原文渲染和现有图片下载权限，release 构建与原生验收通过，data 图片权限回归测试通过。当前实现以有界整封图片托管在 GPUI 滚动区，属于过渡适配；选区、链接点击、后台渲染和真实远程图片服务验收仍是 I7.2，完成前不标记为最终阅读器。
+原文 HTML 已切换为 Blitz；早期 Kit HTML 崩溃路径不再承载原文阅读。当前采用有界整封 PNG 和 GPUI 交互适配，下一步根据实际长邮件瓶颈评估分块绘制，保留兼容回归及可访问性验收。历史调研见 [排版记录](windows-html-renderer-research.md)。
 
 | 风险 | 应对 |
 | --- | --- |
 | gpui 0.2.2 到 gpui-pre 0.3.7 的 API 差异 | 逐文件移植；每次提交都保证能编译、测试能通过 |
-| Kit 的 HTML 渲染缺少复杂邮件布局能力 | 当前默认简化 HTML，可切换 Markdown；已明确不保证原样显示，下一轮按 HTML 阅读器文档验证独立排版引擎 |
-| GPUI 图片加载没有字节上限的钩子 | 远程图片只在用户逐封允许后加载；以后可以换成自建的带上限下载器 |
+| Blitz 为 beta，整封 PNG 仍有绘图上限 | 用真实样本和合成回归验证；超限保留 Markdown 正文，后续评估分块绘制 |
+| 图片的压缩字节与解码像素都可能增长 | 逐封允许、Rust 下载器、数量/缓存字节/像素预算、旧结果丢弃 |
 | Kit 可能需要比默认 stable 更新的 Rust | 构建脚本和 CI 固定到验证过的版本 |
 | 上游继续修改 `desktop/` | 定期 rebase；核心修复单独提交，方便拆成上游 PR |
 | 核心修复改变 Mac 的行为（例如删除账号会被拒绝） | 在提交说明和 PR 描述里写清楚 |

@@ -1,10 +1,6 @@
-//! Native mail reader. Kit's TextView renders the Markdown or restricted HTML that
-//! the core prepared; there is no browser engine, so nothing in a message runs.
-//! Images stay placeholders unless allowed for the current message, and links
-//! leave the app only for http, https and mailto.
-//! TextView is a content renderer, not a CSS layout engine. Nested mail tables,
-//! colspan/rowspan and stylesheet layouts are not faithfully rendered; see
-//! docs/windows-html-reader.md before extending this adapter.
+//! Native mail reader. Blitz renders original HTML/CSS; Kit's TextView hosts
+//! plain and translated content. Selection, scrolling and clipboard belong to
+//! GPUI; document layout and Unicode cluster hit testing belong to Blitz.
 use gpui_kit::{base::TextView, prelude::FluentBuilder as _, *};
 use lightmail_core::ReaderContent;
 use std::sync::Arc;
@@ -95,7 +91,13 @@ fn body(
 }
 
 /// `key` names the message and reading mode, so no text state leaks between them.
-pub fn view(key: &str, document: &Document, images: Images) -> AnyElement {
+pub fn view(
+    key: &str,
+    document: &Document,
+    images: Images,
+    state: &crate::app::MailDesktop,
+    cx: &Context<crate::app::MailDesktop>,
+) -> AnyElement {
     let scroll = || div().id("reader-scroll").size_full().overflow_y_scroll();
     match document {
         Document::Markdown(text) | Document::Html(text) => {
@@ -118,8 +120,44 @@ pub fn view(key: &str, document: &Document, images: Images) -> AnyElement {
             let mut surface = div()
                 .id(format!("reader-blitz:{key}"))
                 .relative()
-                .w_full()
+                .w(px(rendered.width))
                 .h(px(rendered.height))
+                .track_focus(&state.reader_focus)
+                .key_context("BlitzReader")
+                .on_action(
+                    cx.listener(|s, _: &crate::shortcuts::CopyReaderSelection, _, cx| {
+                        s.copy_reader_selection(cx)
+                    }),
+                )
+                .on_action(
+                    cx.listener(|s, _: &crate::shortcuts::SelectReaderAll, _, cx| {
+                        s.select_reader(crate::blitz_reader::Select::All, cx)
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|s, e: &MouseDownEvent, w, cx| {
+                        s.begin_reader_selection(e.position, w, cx)
+                    }),
+                )
+                .on_mouse_move(cx.listener(|s, e: &MouseMoveEvent, _, cx| {
+                    if e.pressed_button == Some(MouseButton::Left) {
+                        s.move_reader_selection(e.position, cx);
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|s, e: &MouseUpEvent, _, cx| {
+                        s.end_reader_selection(e.position, true, cx)
+                    }),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|s, e: &MouseUpEvent, _, cx| {
+                        s.end_reader_selection(e.position, false, cx)
+                    }),
+                )
+                .cursor(CursorStyle::IBeam)
                 .child(
                     img(ImageSource::Image(rendered.image.clone()))
                         .id(format!("reader-blitz-image:{key}"))
@@ -127,7 +165,6 @@ pub fn view(key: &str, document: &Document, images: Images) -> AnyElement {
                         .h(px(rendered.height)),
                 );
             for (index, link) in rendered.links.iter().enumerate() {
-                let href = link.href.clone();
                 surface = surface.child(
                     div()
                         .id(format!("reader-blitz-link:{key}:{index}"))
@@ -137,15 +174,41 @@ pub fn view(key: &str, document: &Document, images: Images) -> AnyElement {
                         .w(px(link.width))
                         .h(px(link.height))
                         .bg(rgba(0x00000000))
-                        .cursor_pointer()
-                        .on_click(move |_, _, cx| {
-                            if allowed_link(&href) {
-                                cx.open_url(&href);
-                            }
-                        }),
+                        .cursor_pointer(),
                 );
             }
-            scroll().child(surface).into_any_element()
+            for (index, rect) in state.reader_selection.rects.iter().enumerate() {
+                surface = surface.child(
+                    div()
+                        .id(format!("reader-selection:{index}"))
+                        .absolute()
+                        .left(px(rect.x))
+                        .top(px(rect.y))
+                        .w(px(rect.width))
+                        .h(px(rect.height))
+                        .bg(rgba(0x4285f44d)),
+                );
+            }
+            let weak = cx.entity().downgrade();
+            surface = surface.child(
+                canvas(
+                    move |bounds, _, cx| {
+                        let _ = weak.update(cx, |s, _| s.reader_surface = bounds);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            );
+            div()
+                .id("reader-scroll")
+                .size_full()
+                .overflow_scroll()
+                .track_scroll(&state.reader_scroll)
+                .child(surface)
+                .into_any_element()
         }
         Document::Bilingual(pairs) => {
             let mut rows = div().flex().flex_col().gap_6().w_full().pb_6();

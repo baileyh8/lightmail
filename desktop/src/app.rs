@@ -113,6 +113,19 @@ pub struct MailDesktop {
     pub reader: Option<crate::reader::Document>,
     pub reader_dirty: bool,
     pub reader_error: Option<String>,
+    pub reader_focus: FocusHandle,
+    pub reader_scroll: ScrollHandle,
+    pub reader_surface: Bounds<Pixels>,
+    pub reader_selection: crate::blitz_reader::Selected,
+    reader_viewport: crate::blitz_reader::ReaderViewport,
+    reader_worker: crate::blitz_reader::Worker,
+    reader_resize_task: Option<Task<()>>,
+    reader_selection_task: Option<Task<()>>,
+    reader_selection_sequence: u64,
+    reader_selection_pending: bool,
+    reader_copy_pending: bool,
+    reader_anchor: Option<crate::blitz_reader::Point>,
+    reader_dragged: bool,
     pub storage: Option<StorageInfo>,
     pub page_offset: u32,
     pub search_text: String,
@@ -287,6 +300,19 @@ impl MailDesktop {
             reader: None,
             reader_dirty: false,
             reader_error: None,
+            reader_focus: cx.focus_handle(),
+            reader_scroll: ScrollHandle::new(),
+            reader_surface: Bounds::default(),
+            reader_selection: Default::default(),
+            reader_viewport: Default::default(),
+            reader_worker: crate::blitz_reader::Worker::new(),
+            reader_resize_task: None,
+            reader_selection_task: None,
+            reader_selection_sequence: 0,
+            reader_selection_pending: false,
+            reader_copy_pending: false,
+            reader_anchor: None,
+            reader_dragged: false,
             storage: None,
             page_offset: 0,
             search_text: String::new(),
@@ -572,6 +598,7 @@ impl MailDesktop {
         self.mode = ExportMode::Original;
         self.images = false;
         self.remote_images.reset();
+        self.reader_scroll.set_offset(Point::default());
         self.loading = true;
         self.reader_dirty = true;
         self.reader_error = None;
@@ -1410,11 +1437,13 @@ impl MailDesktop {
         self.reader_dirty = false;
         self.blitz_generation = self.blitz_generation.wrapping_add(1);
         self.blitz_task = None;
+        self.clear_reader_selection(cx);
         self.reader = None;
-        self.loading = false;
         let Some(body) = &self.body else {
+            self.reader_worker.clear(self.blitz_generation);
             return;
         };
+        self.loading = false;
         match reader_content(
             body,
             self.translation.as_ref(),
@@ -1425,41 +1454,204 @@ impl MailDesktop {
                 let generation = self.blitz_generation;
                 let allow_images = self.images;
                 let platform = self.platform.clone();
+                let mut fallback =
+                    reader_content(body, self.translation.as_ref(), self.mode, false)
+                        .ok()
+                        .map(crate::reader::Document::from);
+                let reply = self.reader_worker.load(
+                    generation,
+                    body.message_id.clone(),
+                    html,
+                    self.reader_viewport,
+                    allow_images,
+                    platform,
+                );
                 self.loading = true;
                 self.blitz_task = Some(cx.spawn(async move |this, cx| {
-                    let result = cx
-                        .background_spawn(async move {
-                            crate::blitz_reader::render(&html, 720, allow_images, platform)
-                        })
-                        .await;
-                    let _ = this.update(cx, |s, cx| {
-                        if s.blitz_generation != generation {
-                            return;
-                        }
-                        s.loading = false;
-                        match result {
-                            Ok(rendered) => {
-                                s.reader = Some(crate::reader::Document::Blitz(Arc::new(rendered)));
-                                s.reader_error = None;
+                    while let Ok(result) = reply.recv().await {
+                        let _ = this.update(cx, |s, cx| {
+                            if s.blitz_generation != generation {
+                                return;
                             }
-                            Err(error) => {
-                                s.status = format!("原生 HTML 阅读器回退：{error}");
-                                s.reader_error = None;
+                            s.loading = false;
+                            match result {
+                                Ok(rendered) => {
+                                    if rendered.viewport != s.reader_viewport {
+                                        s.loading = true;
+                                        return;
+                                    }
+                                    s.reader_anchor = None; // a reflow ends pointer capture but preserves the completed text range
+                                    s.reader_selection = rendered.selection.clone();
+                                    s.reader =
+                                        Some(crate::reader::Document::Blitz(Arc::new(rendered)));
+                                    s.reader_error = None;
+                                }
+                                Err(error) => {
+                                    s.status = format!("原生 HTML 阅读器回退：{error}");
+                                    s.reader = fallback.take();
+                                    s.reader_error = s.reader.is_none().then(|| error.to_string());
+                                }
                             }
-                        }
-                        s.record("reader-render");
-                        cx.notify();
-                    });
+                            s.record("reader-render");
+                            cx.notify();
+                        });
+                    }
                 }));
                 return;
             }
             Ok(content) => {
+                self.reader_worker.clear(self.blitz_generation);
                 self.reader = Some(content.into());
                 self.reader_error = None;
             }
-            Err(e) => self.reader_error = Some(e.to_string()),
+            Err(e) => {
+                self.reader_worker.clear(self.blitz_generation);
+                self.reader_error = Some(e.to_string());
+            }
         }
         self.record("reader-render");
+    }
+
+    pub fn measure_reader(&mut self, bounds: Bounds<Pixels>, scale: f32, cx: &mut Context<Self>) {
+        let Some(viewport) = crate::blitz_reader::ReaderViewport::new(
+            bounds.size.width.into(),
+            bounds.size.height.into(),
+            scale,
+        ) else {
+            return;
+        };
+        if self.reader_viewport == viewport {
+            return;
+        }
+        self.reader_viewport = viewport;
+        if self.body.as_ref().is_none_or(|b| b.html.is_empty()) || self.plain_reading {
+            return;
+        }
+        self.reader_resize_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.reader_dirty = true;
+                s.update_reader(cx);
+                cx.notify();
+            });
+        }));
+    }
+    pub fn clear_reader_selection(&mut self, _cx: &mut Context<Self>) {
+        self.reader_selection = Default::default();
+        self.reader_selection_sequence = self.reader_selection_sequence.wrapping_add(1);
+        self.reader_selection_task = None;
+        self.reader_selection_pending = false;
+        self.reader_copy_pending = false;
+        self.reader_anchor = None;
+        self.reader_dragged = false;
+    }
+    fn reader_point(&self, position: Point<Pixels>) -> crate::blitz_reader::Point {
+        crate::blitz_reader::Point {
+            x: (position.x - self.reader_surface.left()).into(),
+            y: (position.y - self.reader_surface.top()).into(),
+        }
+    }
+    pub fn begin_reader_selection(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_reader_selection(cx);
+        self.reader_anchor = Some(self.reader_point(position));
+        self.select_reader(crate::blitz_reader::Select::Clear, cx);
+        window.focus(&self.reader_focus, cx);
+        cx.stop_propagation();
+        cx.notify();
+    }
+    pub fn move_reader_selection(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(anchor) = self.reader_anchor else {
+            return;
+        };
+        let focus = self.reader_point(position);
+        if (focus.x - anchor.x).abs() + (focus.y - anchor.y).abs() < 3. && !self.reader_dragged {
+            return;
+        }
+        self.reader_dragged = true;
+        self.select_reader(crate::blitz_reader::Select::Range(anchor, focus), cx);
+    }
+    pub fn end_reader_selection(
+        &mut self,
+        position: Point<Pixels>,
+        inside: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.reader_anchor.is_none() {
+            return;
+        }
+        self.move_reader_selection(position, cx);
+        self.reader_anchor = None;
+        if self.reader_dragged || !inside {
+            return;
+        }
+        let p = self.reader_point(position);
+        let href = if let Some(crate::reader::Document::Blitz(rendered)) = &self.reader {
+            rendered
+                .links
+                .iter()
+                .find(|l| p.x >= l.x && p.x <= l.x + l.width && p.y >= l.y && p.y <= l.y + l.height)
+                .map(|link| link.href.clone())
+        } else {
+            None
+        };
+        if let Some(href) = href.filter(|href| crate::reader::allowed_link(href)) {
+            self.record("reader-link-open");
+            if self.acceptance.is_none() {
+                cx.open_url(&href);
+            }
+        }
+    }
+    pub fn select_reader(
+        &mut self,
+        selection: crate::blitz_reader::Select,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.reader, Some(crate::reader::Document::Blitz(_))) {
+            return;
+        }
+        self.reader_selection_sequence = self.reader_selection_sequence.wrapping_add(1);
+        let sequence = self.reader_selection_sequence;
+        let generation = self.blitz_generation;
+        let reply = self.reader_worker.select(generation, selection);
+        self.reader_selection_pending = true;
+        self.reader_selection_task = Some(cx.spawn(async move |this, cx| {
+            let result = reply.recv().await;
+            let _ = this.update(cx, |s, cx| {
+                if generation != s.blitz_generation || sequence != s.reader_selection_sequence {
+                    return;
+                }
+                s.reader_selection_pending = false;
+                if let Ok(selected) = result {
+                    s.reader_selection = selected;
+                }
+                if std::mem::take(&mut s.reader_copy_pending) {
+                    s.copy_reader_selection(cx);
+                }
+                s.record("reader-selection");
+                cx.notify();
+            });
+        }));
+    }
+    pub fn copy_reader_selection(&mut self, cx: &mut Context<Self>) {
+        if self.reader_selection_pending {
+            self.reader_copy_pending = true;
+            return;
+        }
+        if !self.reader_selection.text.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(
+                self.reader_selection.text.clone(),
+            ));
+            self.status = "已复制选中文本".into();
+            self.record("copy-reader-selection");
+            cx.notify();
+        }
     }
 }
 pub fn date(timestamp: i64) -> String {

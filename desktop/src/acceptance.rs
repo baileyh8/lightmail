@@ -314,6 +314,179 @@ fn blocks_remote_images(images: &crate::reader::Images) -> bool {
     )
 }
 
+fn post_reader_pointer(
+    handle: AnyWindowHandle,
+    position: Point<Pixels>,
+    message: u32,
+    buttons: usize,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    handle.update(cx, |_, window, _| {
+        #[cfg(windows)]
+        {
+            let packed = win32::coordinates(
+                (f32::from(position.x) * window.scale_factor()) as i32,
+                (f32::from(position.y) * window.scale_factor()) as i32,
+            );
+            anyhow::ensure!(
+                unsafe { win32::PostMessageW(win32::hwnd(window)?, message, buttons, packed) } != 0,
+                "Reader pointer message failed"
+            );
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (window, position, message, buttons);
+            anyhow::bail!("Reader pointer acceptance needs Windows");
+        }
+    })?
+}
+async fn reader_selection(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    path: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    let original = handle.update(cx, |_, window, _| {
+        let original = window.viewport_size();
+        window.resize(size(px(1120.), px(780.)));
+        original
+    })?;
+    for _ in 0..40 {
+        pause(cx).await;
+        if handle.update(cx,|_,_,cx| {
+            let s=view.read(cx);
+            matches!(s.reader.as_ref(),Some(Document::Blitz(r)) if (r.viewport.width as f32-f32::from(s.probes["reader-viewport"].size.width)).abs()<=1. &&r.source.contains("Alpha 中文 Beta"))
+        })? { break; }
+    }
+    handle.update(cx, |_, window, cx| {
+        let s = view.read(cx);
+        let Some(Document::Blitz(r)) = &s.reader else {
+            anyhow::bail!("Reader absent after resize");
+        };
+        anyhow::ensure!(
+            (r.viewport.width as f32 - f32::from(s.probes["reader-viewport"].size.width)).abs()
+                <= 1.,
+            "Reader ignored actual pane width"
+        );
+        let focus = s.reader_focus.clone();
+        window.focus(&focus, cx);
+        window.dispatch_action(Box::new(crate::shortcuts::SelectReaderAll), cx);
+        Ok::<_, anyhow::Error>(())
+    })??;
+    for _ in 0..40 {
+        pause(cx).await;
+        if handle.update(cx, |_, _, cx| {
+            view.read(cx)
+                .reader_selection
+                .text
+                .contains("Alpha 中文 Beta")
+        })? {
+            break;
+        }
+    }
+    let (start, end) = handle.update(cx, |_, _, cx| {
+        let s = view.read(cx);
+        anyhow::ensure!(
+            s.reader_selection
+                .text
+                .contains("Scrollable synthetic paragraph 79"),
+            "Select-all missed document tail"
+        );
+        let rect = s
+            .reader_selection
+            .rects
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("Selection geometry absent"))?;
+        let origin = s.reader_surface.origin;
+        Ok::<_, anyhow::Error>((
+            point(
+                origin.x + px(rect.x + 1.),
+                origin.y + px(rect.y + rect.height / 2.),
+            ),
+            point(
+                origin.x + px(rect.x + rect.width - 1.),
+                origin.y + px(rect.y + rect.height / 2.),
+            ),
+        ))
+    })??;
+    post_reader_pointer(handle, start, 0x0200, 0, cx)?;
+    post_reader_pointer(handle, start, 0x0201, 1, cx)?;
+    pause(cx).await;
+    post_reader_pointer(handle, end, 0x0200, 1, cx)?;
+    post_reader_pointer(handle, end, 0x0202, 0, cx)?;
+    for _ in 0..40 {
+        pause(cx).await;
+        if handle.update(cx, |_, _, cx| {
+            view.read(cx).reader_selection.text == "Alpha 中文 Beta"
+        })? {
+            break;
+        }
+    }
+    handle.update(cx, |_, window, cx| {
+        anyhow::ensure!(
+            view.read(cx).reader_selection.text == "Alpha 中文 Beta",
+            "Native mouse selection did not preserve Chinese text"
+        );
+        window.dispatch_action(Box::new(crate::shortcuts::CopyReaderSelection), cx);
+        Ok::<_, anyhow::Error>(())
+    })??;
+    pause(cx).await;
+    handle.update(cx, |_, _, cx| {
+        anyhow::ensure!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref()
+                == Some("Alpha 中文 Beta"),
+            "Reader copy action did not use native selection"
+        );
+        Ok::<_, anyhow::Error>(())
+    })??;
+    screenshot(path, "windows-reader-selection", cx).await?;
+    let (start, end, opens) = handle.update(cx, |_, _, cx| {
+        let s = view.read(cx);
+        let Some(Document::Blitz(r)) = &s.reader else {
+            anyhow::bail!("HTML reader disappeared");
+        };
+        let link = &r.links[0];
+        let origin = s.reader_surface.origin;
+        Ok::<_, anyhow::Error>((
+            point(
+                origin.x + px(link.x + 1.),
+                origin.y + px(link.y + link.height / 2.),
+            ),
+            point(
+                origin.x + px(link.x + link.width - 1.),
+                origin.y + px(link.y + link.height / 2.),
+            ),
+            s.actions
+                .iter()
+                .filter(|a| a.as_str() == "reader-link-open")
+                .count(),
+        ))
+    })??;
+    post_reader_pointer(handle, start, 0x0201, 1, cx)?;
+    pause(cx).await;
+    post_reader_pointer(handle, end, 0x0200, 1, cx)?;
+    post_reader_pointer(handle, end, 0x0202, 0, cx)?;
+    pause(cx).await;
+    handle.update(cx, |_, window, cx| {
+        let s = view.read(cx);
+        anyhow::ensure!(
+            s.actions
+                .iter()
+                .filter(|a| a.as_str() == "reader-link-open")
+                .count()
+                == opens,
+            "Dragging link text activated navigation"
+        );
+        window.resize(original);
+        Ok::<_, anyhow::Error>(())
+    })??;
+    pause(cx).await;
+    Ok(())
+}
+
 #[cfg(windows)]
 async fn tray_lifecycle(
     view: &Entity<MailDesktop>,
@@ -423,7 +596,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // reloads the cached body, so a delayed check would race it.
             let html_ready=handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{
                 let body=s.body.as_mut().unwrap();
-                body.html=format!("<table style='border:2px solid #226451'><tr><td><a href='https://example.com/synthetic-link'>Visible link</a></td></tr></table><img src='https://example.invalid/pixel.png'><script>document.body.dataset.executed='true'</script>{}",(0..80).map(|i|format!("<p>Scrollable synthetic paragraph {i}</p>")).collect::<String>());
+                body.html=format!("<p style='font:18px Microsoft YaHei;margin:0;padding:12px'>Alpha 中文 Beta</p><table style='border:2px solid #226451'><tr><td><a href='https://example.com/synthetic-link'>Visible link</a></td></tr></table><img src='https://example.invalid/pixel.png'><script>document.body.dataset.executed='true'</script>{}",(0..80).map(|i|format!("<p>Scrollable synthetic paragraph {i}</p>")).collect::<String>());
                 s.plain_reading=false;s.reader_dirty=true;s.update_reader(cx);cx.notify();
                 true
             }))?;
@@ -446,6 +619,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
                 anyhow::ensure!(crate::reader::allowed_link("https://example.com/synthetic-link")&&!crate::reader::allowed_link("javascript:alert(1)"),"Link policy failed");
                 Ok::<_,anyhow::Error>(())
             })??;
+            reader_selection(&view,handle,&path,cx).await?;
             // Opting in decodes embedded images, but never reaches local files.
             handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{s.images=true;cx.notify();}))?;
             handle.update(cx,|_,_,cx|{
@@ -478,7 +652,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Opt-in long run for the memory curve; synthetic demo mail only.
             let reads=std::env::var("LIGHTMAIL_SOAK_READS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0);
             if reads>0 {soak(&view,handle,&path,reads,cx).await?;}
-            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
+            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
         }.await;
         let report=match result{Ok(v)=>v,Err(e)=>serde_json::json!({"passed":false,"error":format!("{e:#}")})};
         let _=std::fs::create_dir_all(&path);let _=std::fs::write(path.join("native-acceptance.json"),report.to_string());

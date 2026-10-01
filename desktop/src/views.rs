@@ -1008,6 +1008,8 @@ impl MailDesktop {
                         &format!("{}:{mode}:{layout}", message.id),
                         document,
                         self.image_policy(),
+                        self,
+                        cx,
                     ))
                     .child(probe_marker("reader-viewport".into(), cx))
                     .into_any_element()
@@ -1017,7 +1019,27 @@ impl MailDesktop {
                     .child(muted("这封邮件暂无可显示正文"))
                     .into_any_element()
             };
-            panel = panel.child(div().flex_1().min_h_0().px(px(36.)).child(content));
+            let reader = cx.entity().downgrade();
+            let geometry = canvas(
+                move |bounds, window, cx| {
+                    let _ = reader.update(cx, |s, cx| {
+                        s.measure_reader(bounds, window.scale_factor(), cx)
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full();
+            panel = panel.child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .px(px(36.))
+                    .child(div().relative().size_full().child(content).child(geometry)),
+            );
             if let Some(body) = &self.body {
                 if !body.attachments.is_empty() {
                     let mut files = row().px(px(36.)).py_2();

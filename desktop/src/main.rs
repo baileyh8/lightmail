@@ -7,6 +7,7 @@ mod app;
 mod assets;
 mod blitz_reader;
 mod events;
+mod image_types;
 mod images;
 mod instance;
 mod platform;

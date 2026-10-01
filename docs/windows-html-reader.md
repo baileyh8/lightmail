@@ -1,5 +1,7 @@
 # Windows 邮件 HTML 阅读器：能力与后续方案
 
+2026-10-02 当前实现：原文 HTML 已使用 GPUI Kit + Blitz，支持实际宽度/DPI、选区复制和异步图片重排。实现与验证见 [Blitz 迭代记录](windows-blitz-reader-iteration.md)。下文保留 2026-09-30 对 Kit TextView 的早期核对，不代表当前原文阅读路径。
+
 核对日期：2026-09-30；分支 `feat/windows-gpui-kit`；实际依赖 `gpui-kit =0.7.0`、`gpui-base =0.7.0`。继续坚持 GPUI Kit，不引入 WebView / WebView2。
 
 ## 明确结论

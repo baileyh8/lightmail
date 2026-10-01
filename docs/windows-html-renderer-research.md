@@ -145,3 +145,5 @@ Blitz 的核心由 Stylo（CSS）、Taffy（盒布局）、Parley（文本）组
 后续已完成同一 Win32 宿主、同样 20 封缓存邮件的 Blitz / WebView2 三轮资源对照，详见 [测试结果与后续设计](windows-reader-performance-comparison.md)。约 2.6ms 的历史数字仅测 `resolve`，不能拿来与完整 WebView2 导航或产品绘图时间比较；历史高 DPI 数据也不能代替相同逻辑视口的跨引擎验收。
 
 当前 Blitz 管线在本机输入上明显节省内存。按本项目“低资源占用、真实邮件可读”的目标，默认继续 GPUI Kit + Blitz，完成实际宽度/DPI、选区复制、图片重排、可访问性和长邮件验收。整封 PNG 的适配缺口不能直接视为 CSS 引擎不够用，完整浏览器规范覆盖也不是当前前提。WebView2 保留为关键兼容问题无法合理解决时的备选；现有数据不要求切换产品。
+
+2026-10-02 已完成实际宽度/DPI 重排、拖动选区与复制、异步图片队列、资源预算及托盘唤醒修复，并用 20 封缓存邮件完成 180 组产品 worker 检查。详细结果与仍需完成的边界见 [Blitz 迭代记录](windows-blitz-reader-iteration.md)。

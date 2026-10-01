@@ -31,13 +31,15 @@ rfd = "0.15"
 raw-window-handle = "0.6"
 # Native HTML/CSS reader candidate. Keep the shell out of the dependency graph;
 # GPUI owns the window and receives AnyRender output through blitz_reader.
-blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "ed03fe183a9f129965ead6435c0caa8e9c49c401", default-features = false, features = ["system-fonts"] }
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "ed03fe183a9f129965ead6435c0caa8e9c49c401", default-features = false, features = ["system-fonts", "complex-scripts"] }
 blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "ed03fe183a9f129965ead6435c0caa8e9c49c401" }
 blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "ed03fe183a9f129965ead6435c0caa8e9c49c401", default-features = false }
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "ed03fe183a9f129965ead6435c0caa8e9c49c401" }
 anyrender = "=0.13.0"
 anyrender_vello_cpu = "=0.17.0"
 png = "0.18"
+parley = { git = "https://github.com/linebender/parley", rev = "e52cf10bf96f10b1fdccb77199f38d57dd075a19", default-features = false, features = ["std"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
