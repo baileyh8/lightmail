@@ -104,7 +104,7 @@ Blitz 的核心由 Stylo（CSS）、Taffy（盒布局）、Parley（文本）组
 
 源码已确认有表格布局、colspan/rowspan、文本选择、AccessKit，以及默认不获取资源的 `DummyNetProvider`。可以只组合 `blitz-html` / `blitz-dom` / `blitz-paint`，不使用其 shell、网络或脚本模块；但 GPUI 的字体、GPU 命令、事件与无障碍仍要桥接。[核心依赖](https://github.com/DioxusLabs/blitz/blob/ed03fe183a9f129965ead6435c0caa8e9c49c401/packages/blitz-dom/Cargo.toml)
 
-其当前 README 将状态定义为 beta，并明确存在缺失功能；主线还固定了 Taffy 和 Parley 的 Git 修订。因此“Rust 原生”不意味着完整兼容或能直接替换 Kit 控件。本轮没有测其 Windows 编译、包体或内存，不能断言它比 litehtml 大多少，也不能以 litehtml 的样本结果代表它。
+其当前 README 将状态定义为 beta，并明确存在缺失功能；主线还固定了 Taffy 和 Parley 的 Git 修订。因此“Rust 原生”不意味着完整兼容或能直接替换 Kit 控件。下节补充其 Windows 编译与布局验证；不能以 litehtml 的样本结果代表它。
 
 ### Blitz 的 Windows 实测
 
@@ -138,4 +138,10 @@ Blitz 的核心由 Stylo（CSS）、Taffy（盒布局）、Parley（文本）组
 4. **采用前验证**：合成样本和本机授权的 26 封邮件重测；分别检查 360 / 600 / 720px、100 / 150 / 200% DPI、尾部内容、选区及图片权限。加字体/绘制缓存和连续阅读内存检查，量出真正的应用增量。
 5. **更广 CSS 需求**：若关键样本仍需大规模扩写引擎，转为 Blitz 的 Windows 实编与相同样本对照；不要把 TextView 或 litehtml 逐渐扩成一个自行维护的完整浏览器引擎。
 
-本轮没有替换产品阅读器、没有改共享核心或 Mac 实现。当前产品里已知的 Kit HTML 崩溃仍未修复，下一轮应优先避免这条路径或完成其最小复现；本轮没有因为读取本机真实邮件就把产品修复状态标为完成。
+早期独立调研没有替换产品阅读器。之后产品原文 HTML 已改走上述 Blitz 管线，以避开 Kit HTML 布局路径；这不代表已修复 Kit 本身的崩溃，也不代表完整阅读交互已完成。
+
+## 2026-10-01：资源对照与选型复核
+
+后续已完成同一 Win32 宿主、同样 20 封缓存邮件的 Blitz / WebView2 三轮资源对照，详见 [测试结果与后续设计](windows-reader-performance-comparison.md)。约 2.6ms 的历史数字仅测 `resolve`，不能拿来与完整 WebView2 导航或产品绘图时间比较；历史高 DPI 数据也不能代替相同逻辑视口的跨引擎验收。
+
+当前 Blitz 管线在本机输入上明显节省内存。另一方面，整封 PNG 并没有完成选区、可访问性或浏览器兼容能力。此前“仍不需要 WebView”的建议仅适用于接受这些适配成本的目标；现建议在保留 GPUI Kit 主界面的前提下评估按需 WebView2 正文控件，以兼容与开发成本为采用理由，同时以托盘闲置后实际释放浏览器进程为资源验收条件。当前产品尚未切换。
