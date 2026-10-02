@@ -481,7 +481,9 @@ impl OAuthFixture {
                 let path = request.split_whitespace().nth(1).unwrap().to_string();
                 let body = request.split_once("\r\n\r\n").unwrap().1.to_string();
                 observed.lock().unwrap().push((path.clone(), body));
-                let body = if path == "/identity" {
+                let identity_request = path == "/identity"
+                    || url::Url::parse(&path).is_ok_and(|u| u.path() == "/identity");
+                let body = if identity_request {
                     serde_json::json!({"email":identity,"email_verified":true}).to_string()
                 } else {
                     serde_json::json!({"access_token":"synthetic-access","refresh_token":"synthetic-refresh","expires_in":3600}).to_string()
@@ -595,6 +597,54 @@ fn oauth_refresh_is_single_flight_and_failure_preserves_secret() {
             else {let mut tasks=Vec::new();for _ in 0..10 {let app=app.clone();let id=account.id.clone();tasks.push(tokio::spawn(async move {app.credential(&id).await}));}for task in tasks {assert_eq!(task.await.unwrap().unwrap(),"synthetic-access");}}
             assert_eq!(server.requests.lock().unwrap().len(),1);
         }
+    });
+}
+
+#[test]
+fn account_proxy_covers_google_code_identity_refresh_and_keeps_loopback_local() {
+    crate::platform::runtime().block_on(async {
+        let origin = OAuthFixture::new("unused", false);
+        // An HTTP proxy may receive an absolute URI. This fixture responds only
+        // with synthetic tokens and never forwards anything outside loopback.
+        let proxy = OAuthFixture::new("proxied@example.com", false);
+        let directory = tempfile::tempdir().unwrap();
+        let engine = MailEngine::new(directory.path().to_string_lossy().into()).unwrap();
+        let platform = Arc::new(TestPlatform::default());
+        *platform.route.lock().unwrap() = Some(ProxyRoute { kind: "http".into(), host: "127.0.0.1".into(), port: 1 });
+        let policy = AccountProxySettings {
+            mode: AccountProxyMode::Http, host: "127.0.0.1".into(),
+            port: url::Url::parse(&proxy.endpoint).unwrap().port().unwrap(),
+        };
+        let proxied = real_account("proxied", "gmail", "oauth");
+        let direct = real_account("direct", "gmail", "oauth");
+        let mut login = GoogleLogin::new(proxied.clone(), "synthetic-client".into(), policy.clone().scoped_platform(platform.clone()).unwrap()).unwrap();
+        Arc::get_mut(&mut login).unwrap().endpoints = origin.endpoints();
+        let url = url::Url::parse(&login.authorization_url()).unwrap();
+        let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
+        let callback = format!("{}?state={}&code=synthetic-code", query["redirect_uri"], query["state"]);
+        let finished = tokio::spawn(login.finish(String::new()));
+        assert!(reqwest::Client::builder().no_proxy().build().unwrap().get(&callback).send().await.unwrap().status().is_success());
+        finished.await.unwrap().unwrap();
+        assert_eq!(proxy.requests.lock().unwrap().len(), 2);
+        assert!(origin.requests.lock().unwrap().is_empty());
+        for request in proxy.requests.lock().unwrap().iter() {
+            assert!(request.0.starts_with(&origin.endpoint));
+            assert!(!request.0.contains("oauth/callback"));
+        }
+        assert!(platform.read_secret("account:proxied".into()).unwrap().is_some());
+
+        let mut app = MailApplication::new(engine.clone(), platform.clone(), Arc::new(Events::default()));
+        Arc::get_mut(&mut app).unwrap().oauth_endpoints = origin.endpoints();
+        app.clone().save_account_with_proxy(proxied.clone(), String::new(), policy).await.unwrap();
+        app.clone().save_account_with_proxy(direct.clone(), String::new(), AccountProxySettings { mode: AccountProxyMode::Direct, ..Default::default() }).await.unwrap();
+        engine.set_setting("google-client-id".into(), "synthetic-client".into()).unwrap();
+        for account in [&proxied, &direct] {
+            platform.write_secret(format!("account:{}", account.id), serde_json::json!({"accessToken":"expired", "refreshToken":"synthetic-refresh", "expiresAt":0}).to_string()).unwrap();
+        }
+        let (a, b) = futures_util::future::join(app.credential(&proxied.id), app.credential(&direct.id)).await;
+        assert_eq!(a.unwrap(), "synthetic-access"); assert_eq!(b.unwrap(), "synthetic-access");
+        assert_eq!(proxy.requests.lock().unwrap().len(), 3);
+        assert_eq!(origin.requests.lock().unwrap().len(), 1);
     });
 }
 

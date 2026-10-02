@@ -305,16 +305,7 @@ impl MailEngine {
         result
     }
     pub fn save_account(&self, account: Account) -> Result<()> {
-        if account.id.is_empty()
-            || !account.address.contains('@')
-            || account.imap_host.contains(['\r', '\n', '/'])
-            || account.smtp_host.contains(['\r', '\n', '/'])
-        {
-            return Err(fail("邮箱配置不完整"));
-        }
-        self.connection()?.execute("INSERT INTO accounts VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",params![account.id,encode(&account)?]).map_err(fail)?;
-        self.pool.invalidate(&account.id);
-        Ok(())
+        self.save_account_record(account, None)
     }
     pub fn remove_account(&self, account_id: String) -> Result<()> {
         self.pool.invalidate(&account_id);
@@ -345,6 +336,11 @@ impl MailEngine {
         }
         tx.execute("DELETE FROM accounts WHERE id=?1", [&account_id])
             .map_err(fail)?;
+        tx.execute(
+            "DELETE FROM settings WHERE key=?1",
+            [crate::account_proxy::setting_key(&account_id)],
+        )
+        .map_err(fail)?;
         tx.execute(
             "DELETE FROM settings WHERE key LIKE ?1",
             [format!("translation:{}:%", account_id)],

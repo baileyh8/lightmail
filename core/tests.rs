@@ -195,16 +195,20 @@ fn local_protocol_integration() {
         sent_mode: "server".into(),
     };
     let proxy_kind = std::env::var("LIGHTMAIL_PROXY_KIND").unwrap_or_else(|_| "direct".into());
-    if proxy_kind != "direct" {
-        e.configure_proxy(
-            "localhost".into(),
-            proxy_kind.clone(),
-            "127.0.0.1".into(),
-            ports[&proxy_kind].as_u64().unwrap() as u16,
-        )
-        .unwrap();
-    }
     e.save_account(a).unwrap();
+    e.set_account_proxy(
+        "fixture",
+        crate::AccountProxySettings {
+            mode: match proxy_kind.as_str() {
+                "http" => crate::AccountProxyMode::Http,
+                "socks5" => crate::AccountProxyMode::Socks5,
+                _ => crate::AccountProxyMode::Direct,
+            },
+            host: "127.0.0.1".into(),
+            port: ports.get(&proxy_kind).and_then(|p| p.as_u64()).unwrap_or(0) as u16,
+        },
+    )
+    .unwrap();
     let sync = e
         .sync_account("fixture".into(), "fixture-only".into())
         .unwrap();
@@ -289,13 +293,12 @@ fn local_protocol_integration() {
         .lock()
         .unwrap()
         .insert("account:fixture".into(), "fixture-only".into());
-    if proxy_kind != "direct" {
-        *platform.route.lock().unwrap() = Some(crate::ProxyRoute {
-            kind: proxy_kind.clone(),
-            host: "127.0.0.1".into(),
-            port: ports[&proxy_kind].as_u64().unwrap() as u16,
-        });
-    }
+    // Deliberately unusable system proxy: the explicit account policy must win.
+    *platform.route.lock().unwrap() = Some(crate::ProxyRoute {
+        kind: "http".into(),
+        host: "127.0.0.1".into(),
+        port: 1,
+    });
     let events = std::sync::Arc::new(crate::application_tests::Events::default());
     let app = crate::MailApplication::new(e.clone(), platform, events.clone());
     e.runtime
@@ -361,7 +364,78 @@ fn local_protocol_integration() {
     } else {
         assert_eq!(state()["proxy_connects"], 0);
     }
+    // Same hosts and ports, independent account routes. Both IMAP and SMTP are
+    // exercised after a deliberately broken system route has been installed.
+    let mut direct = e.account("fixture").unwrap();
+    direct.id = "independent-direct".into();
+    direct.enabled = false;
+    e.save_account(direct.clone()).unwrap();
+    e.set_account_proxy(
+        &direct.id,
+        crate::AccountProxySettings {
+            mode: crate::AccountProxyMode::Direct,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = state()["proxy_connects"].as_u64().unwrap();
+    e.sync_account(direct.id.clone(), "fixture-only".into())
+        .unwrap();
+    let mut send = draft("direct-account-send");
+    send.account_id = direct.id;
+    e.save_draft(send.clone()).unwrap();
+    assert_eq!(
+        e.send_draft(send.id, "fixture-only".into()).unwrap().status,
+        "accepted"
+    );
+    assert_eq!(state()["proxy_connects"].as_u64().unwrap(), before);
+
+    let mut proxied = e.account("fixture").unwrap();
+    proxied.id = "independent-proxy".into();
+    proxied.enabled = false;
+    proxied.sent_mode = "append".into();
+    e.save_account(proxied.clone()).unwrap();
+    let kind = if proxy_kind == "http" {
+        "socks5"
+    } else {
+        "http"
+    };
+    e.set_account_proxy(
+        &proxied.id,
+        crate::AccountProxySettings {
+            mode: if kind == "http" {
+                crate::AccountProxyMode::Http
+            } else {
+                crate::AccountProxyMode::Socks5
+            },
+            host: "127.0.0.1".into(),
+            port: ports[kind].as_u64().unwrap() as u16,
+        },
+    )
+    .unwrap();
+    e.sync_account(proxied.id.clone(), "fixture-only".into())
+        .unwrap();
+    let mut send = draft("proxied-account-send");
+    send.account_id = proxied.id.clone();
+    e.save_draft(send.clone()).unwrap();
+    assert_eq!(
+        e.send_draft(send.id, "fixture-only".into()).unwrap().status,
+        "accepted"
+    );
+    let after = state()["proxy_connects"].as_u64().unwrap();
+    assert!(after > before);
+    e.set_account_proxy(
+        &proxied.id,
+        crate::AccountProxySettings {
+            mode: crate::AccountProxyMode::Direct,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    e.sync_account(proxied.id, "fixture-only".into()).unwrap();
+    assert_eq!(state()["proxy_connects"].as_u64().unwrap(), after);
     println!("Validated {proxy_kind}: TLS IMAP metadata, selective MIME fetch, attachment decode, flags, IDLE, SMTP accepted/rejected/ambiguous, Bcc privacy and duplicate-send prevention.");
+    println!("Validated mixed accounts: same-server direct/proxy IMAP and SMTP, sent-copy routing and proxy-to-direct reconnect.");
 }
 
 #[test]

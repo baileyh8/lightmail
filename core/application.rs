@@ -75,6 +75,7 @@ impl MailApplication {
         platform: Arc<dyn PlatformServices>,
         observer: Arc<dyn ApplicationObserver>,
     ) -> Arc<Self> {
+        engine.proxies.set_platform(platform.clone());
         Arc::new(Self {
             oauth_endpoints: auth::Endpoints::default(),
             engine,
@@ -199,54 +200,7 @@ impl MailApplication {
             .await
     }
     pub async fn save_account(self: Arc<Self>, account: Account, password: String) -> Result<()> {
-        self.clone()
-            .command(async move {
-                let lane = self.lane(&account.id);
-                let guard = lane.credential.clone().lock_owned().await;
-                tokio::task::spawn_blocking(move || {
-                    let _guard = guard;
-                    let key = format!("account:{}", account.id);
-                    let local = ["demo", "local"].contains(&account.provider.as_str());
-                    // OAuth tokens are written only by GoogleLogin and refresh. A value
-                    // left in a hidden password field must never replace them.
-                    let password = if account.auth_kind == "oauth" || local {
-                        String::new()
-                    } else {
-                        password
-                    };
-                    let existing = self.engine.account(&account.id).ok();
-                    let needs_password = account.auth_kind == "password"
-                        && !local
-                        && existing.as_ref().is_none_or(|a| a.auth_kind != "password");
-                    if needs_password && password.is_empty() {
-                        return Err(fail("请填写密码或客户端授权码"));
-                    }
-                    // Remember the previous secret only when replacing it. An unreadable
-                    // entry leaves nothing to restore, which matches the old behavior.
-                    let previous = if password.is_empty() {
-                        None
-                    } else {
-                        let previous = self.platform.read_secret(key.clone()).ok();
-                        self.platform.write_secret(key.clone(), password)?;
-                        previous
-                    };
-                    self.stop_account(&account.id);
-                    if let Err(error) = self.engine.save_account(account.clone()) {
-                        if let Some(previous) = previous {
-                            let _ = match previous {
-                                Some(value) => self.platform.write_secret(key, value),
-                                None => self.platform.remove_secret(key),
-                            };
-                        }
-                        let _ = self.reconcile_workers();
-                        return Err(error);
-                    }
-                    self.data(&account.id);
-                    self.reconcile_workers()
-                })
-                .await
-                .map_err(|_| fail("账号保存已中断"))?
-            })
+        self.save_account_with_optional_proxy(account, password, None)
             .await
     }
     pub async fn remove_account(self: Arc<Self>, account_id: String) -> Result<()> {
@@ -478,6 +432,76 @@ fn validate_recipients(draft: &Draft) -> Result<()> {
 // Rust-only commands used by the Windows client. They can be exported once the
 // Swift bindings are regenerated; until then macOS keeps its existing calls.
 impl MailApplication {
+    pub fn account_platform(&self, account: &str) -> Result<Arc<dyn PlatformServices>> {
+        self.engine
+            .account_proxy(account)?
+            .scoped_platform(self.platform.clone())
+    }
+    pub async fn save_account_with_proxy(
+        self: Arc<Self>,
+        account: Account,
+        password: String,
+        proxy: crate::AccountProxySettings,
+    ) -> Result<()> {
+        self.save_account_with_optional_proxy(account, password, Some(proxy.validated()?))
+            .await
+    }
+    async fn save_account_with_optional_proxy(
+        self: Arc<Self>,
+        account: Account,
+        password: String,
+        proxy: Option<crate::AccountProxySettings>,
+    ) -> Result<()> {
+        self.clone()
+            .command(async move {
+                let lane = self.lane(&account.id);
+                let guard = lane.credential.clone().lock_owned().await;
+                tokio::task::spawn_blocking(move || {
+                    let _guard = guard;
+                    let key = format!("account:{}", account.id);
+                    let local = ["demo", "local"].contains(&account.provider.as_str());
+                    // OAuth tokens are written only by GoogleLogin and refresh. A value
+                    // left in a hidden password field must never replace them.
+                    let password = if account.auth_kind == "oauth" || local {
+                        String::new()
+                    } else {
+                        password
+                    };
+                    let existing = self.engine.account(&account.id).ok();
+                    let needs_password = account.auth_kind == "password"
+                        && !local
+                        && existing.as_ref().is_none_or(|a| a.auth_kind != "password");
+                    if needs_password && password.is_empty() {
+                        return Err(fail("请填写密码或客户端授权码"));
+                    }
+                    // Remember the previous secret only when replacing it. An unreadable
+                    // entry leaves nothing to restore, which matches the old behavior.
+                    let previous = if password.is_empty() {
+                        None
+                    } else {
+                        let previous = self.platform.read_secret(key.clone()).ok();
+                        self.platform.write_secret(key.clone(), password)?;
+                        previous
+                    };
+                    self.stop_account(&account.id);
+                    if let Err(error) = self.engine.save_account_record(account.clone(), proxy) {
+                        if let Some(previous) = previous {
+                            let _ = match previous {
+                                Some(value) => self.platform.write_secret(key, value),
+                                None => self.platform.remove_secret(key),
+                            };
+                        }
+                        let _ = self.reconcile_workers();
+                        return Err(error);
+                    }
+                    self.data(&account.id);
+                    self.reconcile_workers()
+                })
+                .await
+                .map_err(|_| fail("账号保存已中断"))?
+            })
+            .await
+    }
     /// Pause only automatic receiving/preloading. Manual commands and outbox
     /// timers remain live. Rust-only until upstream chooses the Swift UI.
     pub fn set_automatic_receiving(self: &Arc<Self>, enabled: bool) -> Result<()> {
@@ -755,11 +779,6 @@ impl MailApplication {
         if ["demo", "local"].contains(&a.provider.as_str()) {
             return Ok(String::new());
         }
-        for host in [&a.imap_host, &a.smtp_host] {
-            let route = self.platform.proxy_for(host.clone())?;
-            self.engine
-                .configure_proxy(host.clone(), route.kind, route.host, route.port)?;
-        }
         let value = secret_read(self.platform.clone(), format!("account:{id}"))
             .await?
             .ok_or_else(|| fail(format!("{} 尚未授权，请在账号设置中完成登录", a.name)))?;
@@ -786,8 +805,9 @@ impl MailApplication {
         if !secret.is_empty() {
             fields.push(("client_secret", secret));
         }
+        let account_platform = self.account_platform(id)?;
         let refreshed = auth::token_request(
-            self.platform.as_ref(),
+            account_platform.as_ref(),
             fields,
             &token.refresh_token,
             &self.oauth_endpoints,
