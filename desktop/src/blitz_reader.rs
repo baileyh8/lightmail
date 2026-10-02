@@ -1,7 +1,7 @@
 //! Blitz HTML/CSS reader adapter.
 //!
-//! The DOM/layout engine runs off the GPUI view path and produces a bounded PNG
-//! surface for the first integration step. GPUI remains the window and scroll
+//! The DOM/layout engine runs off the GPUI view path and rasterizes a bounded
+//! visible region with overscan. GPUI remains the window and scroll
 //! host; no Blitz shell or WebView is involved. Resource requests use the same
 //! core downloader as the existing native image reader.
 use anyrender::ImageRenderer;
@@ -31,7 +31,7 @@ pub use worker::Worker;
 mod downloads;
 
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
-const MAX_DOCUMENT_HEIGHT: f32 = 16_000.;
+const MAX_DOCUMENT_HEIGHT: f32 = 2_000_000.;
 const MAX_SURFACE_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MESSAGE_IMAGES: usize = 64;
@@ -76,7 +76,7 @@ impl ReaderViewport {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Point {
     pub x: f32,
     pub y: f32,
@@ -87,6 +87,14 @@ pub struct Rect {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+}
+impl Rect {
+    pub fn covers(&self, point: Point, viewport: ReaderViewport) -> bool {
+        point.x >= self.x - 1.
+            && point.y >= self.y - 1.
+            && point.x + viewport.width as f32 <= self.x + self.width + 1.
+            && point.y + viewport.height as f32 <= self.y + self.height + 1.
+    }
 }
 #[derive(Clone, Default)]
 pub struct Selected {
@@ -104,10 +112,18 @@ pub struct Rendered {
     pub width: f32,
     pub height: f32,
     #[allow(dead_code)]
-    pub source: String,
-    pub links: Vec<LinkHit>,
+    pub source: Arc<str>,
+    pub links: Arc<[LinkHit]>,
     pub viewport: ReaderViewport,
-    pub selection: Selected,
+    pub selection: Option<Selected>,
+    pub area: Rect,
+    pub layout_revision: u64,
+    pub accessible: Arc<[AccessibleText]>,
+}
+pub struct AccessibleText {
+    pub key: u64,
+    pub text: Arc<str>,
+    pub bounds: Rect,
 }
 
 #[derive(Clone)]
@@ -288,11 +304,17 @@ pub fn render(
 /// crosses threads; GPUI receives owned pixels and selection geometry.
 struct Session {
     document: HtmlDocument,
-    source: String,
+    source: Arc<str>,
     viewport: ReaderViewport,
     cancelled: Arc<AtomicBool>,
     roots: Vec<blitz_dom::NodeId>,
     selected_range: SelectedRange,
+    size: (f32, f32),
+    links: Arc<[LinkHit]>,
+    scroll: Point,
+    layout_revision: u64,
+    fixed_elements: bool,
+    accessible: Arc<[AccessibleText]>,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -345,11 +367,17 @@ impl Session {
         let document = HtmlDocument::from_html(&html, config);
         Self {
             document,
-            source: html,
+            source: html.into(),
             viewport,
             cancelled,
             roots: Vec::new(),
             selected_range: SelectedRange::None,
+            size: (0., 0.),
+            links: Arc::from([]),
+            scroll: Point::default(),
+            layout_revision: 0,
+            fixed_elements: false,
+            accessible: Arc::from([]),
         }
     }
     fn resize(&mut self, viewport: ReaderViewport) {
@@ -366,6 +394,33 @@ impl Session {
             document.resolve(0.);
         }
         self.roots = visible_text_roots(document);
+        self.accessible = self
+            .roots
+            .iter()
+            .filter_map(|&id| {
+                let node = document.get_node(id)?;
+                let data = node.element_data()?.inline_layout_data.as_ref()?;
+                let endpoint = Endpoint::new(document, id, 0);
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                endpoint.anonymous.hash(&mut hasher);
+                if endpoint.anonymous.is_none() {
+                    id.hash(&mut hasher);
+                }
+                let position = node.absolute_position(0., 0.);
+                let layout = node.final_layout();
+                Some(AccessibleText {
+                    key: hasher.finish(),
+                    text: format!("{}\n", data.text.trim_end()).into(),
+                    bounds: Rect {
+                        x: position.x + layout.padding.left + layout.border.left,
+                        y: position.y + layout.padding.top + layout.border.top,
+                        width: data.layout.width() / data.layout.scale(),
+                        height: data.layout.height() / data.layout.scale(),
+                    },
+                })
+            })
+            .collect::<Vec<_>>()
+            .into();
         document.clear_text_selection(); // highlight is a GPUI overlay, not baked into the PNG
         let root = document.root_element().final_layout();
         let height = root.size.height.max(root.scrollable_overflow_rect.bottom);
@@ -381,14 +436,6 @@ impl Session {
             .max(self.viewport.width as f32);
         if !width.is_finite() || width > 4096. {
             anyhow::bail!("邮件正文过宽");
-        }
-        let physical_width = (width * self.viewport.scale).ceil() as u32;
-        let physical_height = (height * self.viewport.scale).ceil() as u32;
-        if physical_width > 16000
-            || physical_height > 16000
-            || physical_width as u64 * physical_height as u64 > MAX_SURFACE_PIXELS
-        {
-            anyhow::bail!("邮件正文超过当前绘图内存上限");
         }
         let links = document
             .query_selector_all("a")
@@ -416,7 +463,64 @@ impl Session {
                 )
             })
             .flatten()
-            .collect();
+            .collect::<Vec<_>>();
+        self.links = links.into();
+        self.size = (width, height);
+        self.layout_revision = self.layout_revision.wrapping_add(1);
+        self.fixed_elements = document.tree().iter().any(|(id, node)| {
+            node.primary_styles().is_some()
+                && document.resolved_style_value(id, "position") == "fixed"
+        });
+        self.paint_region(true)
+    }
+    fn paint_region(&mut self, layout_changed: bool) -> anyhow::Result<Rendered> {
+        let (width, height) = self.size;
+        let viewport = self.viewport;
+        let x = self
+            .scroll
+            .x
+            .clamp(0., (width - viewport.width as f32).max(0.));
+        let y = self
+            .scroll
+            .y
+            .clamp(0., (height - viewport.height as f32).max(0.));
+        let top = if self.fixed_elements {
+            y
+        } else {
+            (y / 256.).floor() * 256.
+        };
+        let extra = if self.fixed_elements { 0. } else { 512. };
+        let surface_height = (viewport.height as f32 + extra).min(height - top);
+        let left = if self.fixed_elements { x } else { 0. };
+        let surface_width = if self.fixed_elements {
+            viewport.width as f32
+        } else {
+            width
+        };
+        let area = Rect {
+            x: left,
+            y: top,
+            width: surface_width,
+            height: surface_height,
+        };
+        let physical_width = (surface_width * viewport.scale).ceil() as u32;
+        let mut physical_height = (surface_height * viewport.scale).ceil() as u32;
+        // Drop overscan when needed, never crop the visible viewport to fit.
+        let visible_height = ((y - top + viewport.height as f32) * viewport.scale).ceil() as u32;
+        physical_height =
+            physical_height.min((MAX_SURFACE_PIXELS / physical_width.max(1) as u64) as u32);
+        if physical_width > 16000 || physical_height > 16000 || physical_height < visible_height {
+            anyhow::bail!("阅读视口超过绘图上限");
+        }
+        let area = Rect {
+            height: physical_height as f32 / viewport.scale,
+            ..area
+        };
+        let document = &mut self.document;
+        document.set_viewport_scroll(blitz_dom::Point {
+            x: left as f64,
+            y: top as f64,
+        });
         let mut renderer = VelloCpuImageRenderer::new(physical_width, physical_height);
         let mut pixels = Vec::new();
         renderer.render_to_vec(
@@ -433,16 +537,20 @@ impl Session {
             },
             &mut pixels,
         );
+        document.set_viewport_scroll(blitz_dom::Point { x: 0., y: 0. });
         let png = encode_png(pixels, physical_width, physical_height)?;
-        let selection = self.selected();
+        let selection = layout_changed.then(|| self.selected());
         Ok(Rendered {
             image: Arc::new(Image::from_bytes(ImageFormat::Png, png)),
             width,
             height,
             source: self.source.clone(),
-            links,
+            links: self.links.clone(),
             viewport: self.viewport,
             selection,
+            area,
+            layout_revision: self.layout_revision,
+            accessible: self.accessible.clone(),
         })
     }
     fn select(&mut self, selection: Select) -> Selected {
@@ -899,7 +1007,7 @@ mod tests {
             height: 640,
             scale: 2.,
         });
-        assert_eq!(s.paint().unwrap().selection.text, selected.text);
+        assert_eq!(s.paint().unwrap().selection.unwrap().text, selected.text);
     }
     #[test]
     fn slow_images_do_not_block_switching_mail_or_leak_old_selection() {
@@ -960,7 +1068,10 @@ mod tests {
         );
         release.send(()).unwrap();
         server.join().unwrap();
-        assert_eq!(receive(latest).unwrap().source, "<p>Latest 中文</p>");
+        assert_eq!(
+            receive(latest).unwrap().source.as_ref(),
+            "<p>Latest 中文</p>"
+        );
         assert!(matches!(
             old.try_recv(),
             Err(async_channel::TryRecvError::Closed)
@@ -1016,9 +1127,10 @@ mod tests {
         release.send(()).unwrap();
         server.join().unwrap();
         let after = receive(frames).unwrap();
-        assert_eq!(after.selection.text, selected.text);
+        assert_eq!(after.selection.as_ref().unwrap().text, selected.text);
         assert!(
-            after.selection.rects.last().unwrap().y >= selected.rects.last().unwrap().y + 80.,
+            after.selection.as_ref().unwrap().rects.last().unwrap().y
+                >= selected.rects.last().unwrap().y + 80.,
             "Selection geometry did not follow image reflow"
         );
         assert!(
@@ -1045,7 +1157,7 @@ mod tests {
             "Resize failed to retain the decoded image"
         );
         assert!(
-            resized.selection.text.is_empty(),
+            resized.selection.as_ref().unwrap().text.is_empty(),
             "A cleared selection reappeared after reflow"
         );
         let png = image::load_from_memory(&resized.image.bytes).unwrap();
@@ -1059,7 +1171,7 @@ mod tests {
         assert!(receive(worker.load(
             1,
             "large".into(),
-            "<div style='height:20000px'>Complete plain alternative</div>".into(),
+            "<div style='height:3000000px'>Complete plain alternative</div>".into(),
             Default::default(),
             false,
             platform.clone()
@@ -1078,6 +1190,42 @@ mod tests {
             receive(worker.select(2, Select::All)).text,
             "Still readable"
         );
+    }
+    #[test]
+    fn long_mail_paints_bounded_regions_and_reaches_the_tail_at_every_dpi() {
+        let html="<body style='margin:0'><div style='height:20000px;background:#ff0000'>Header</div><div style='height:640px;background:#00ff00'>Tail 中文</div></body>";
+        for scale in [1., 1.5, 2.] {
+            let mut s = session(html, 720, scale);
+            let first = s.paint().unwrap();
+            assert!(first.height >= 20640.);
+            assert!(first.area.height <= 1152.);
+            let png = image::load_from_memory(&first.image.bytes)
+                .unwrap()
+                .into_rgba8();
+            assert_eq!(png.get_pixel(300, 200).0, [255, 0, 0, 255]);
+            let revision = first.layout_revision;
+            s.scroll = Point { x: 0., y: 20000. };
+            let tail = s.paint_region(false).unwrap();
+            assert_eq!(tail.layout_revision, revision);
+            assert!(
+                Arc::ptr_eq(&first.accessible, &tail.accessible),
+                "Scrolling rebuilt the accessible document"
+            );
+            assert!(tail.selection.is_none());
+            assert!(tail.area.y >= 19900.);
+            assert!(tail.area.height <= 1152.);
+            let png = image::load_from_memory(&tail.image.bytes)
+                .unwrap()
+                .into_rgba8();
+            assert_eq!(
+                png.get_pixel((300. * scale) as u32, (100. * scale) as u32)
+                    .0,
+                [0, 255, 0, 255]
+            );
+            let selected = s.select(Select::All);
+            assert_eq!(selected.text, "Header\nTail 中文");
+            assert!(selected.rects.last().unwrap().y >= 20000.);
+        }
     }
 
     #[test]

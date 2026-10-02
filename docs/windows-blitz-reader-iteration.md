@@ -44,4 +44,4 @@ target/kit-dev/release/examples/blitz_mail_probe.exe build/html-reader-private-2
 
 ## 后续边界
 
-本轮完成基础阅读交互，仍采用有界 PNG 绘制。超长或超大正文暂走 Markdown；视口分块绘制、正文可访问性、多屏 DPI 和完整键盘操作需要后续验收。当前证据支持继续 Blitz，不要求转向 WebView2；没有把这些结果称为完整 CSS 规范覆盖或全部邮件逐像素保真。
+本记录对应基础阅读交互阶段。后续已补有界视口绘制、长邮件尾部阅读与 UI Automation 正文读取，见 [视口与可访问性迭代](windows-blitz-viewport-accessibility.md)。多屏 DPI、完整键盘及 Narrator 体验仍需验收；现有结果不等于完整 CSS 规范覆盖或全部邮件逐像素保真。

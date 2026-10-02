@@ -124,6 +124,23 @@ pub fn view(
                 .h(px(rendered.height))
                 .track_focus(&state.reader_focus)
                 .key_context("BlitzReader")
+                .role(Role::Document)
+                .accessibility_id("mail-body")
+                .aria_label("邮件正文")
+                .on_action(
+                    cx.listener(|s, _: &crate::shortcuts::ReaderPageDown, _, cx| {
+                        s.scroll_reader(1, cx)
+                    }),
+                )
+                .on_action(cx.listener(|s, _: &crate::shortcuts::ReaderPageUp, _, cx| {
+                    s.scroll_reader(-1, cx)
+                }))
+                .on_action(cx.listener(|s, _: &crate::shortcuts::ReaderStart, _, cx| {
+                    s.scroll_reader(-2, cx)
+                }))
+                .on_action(
+                    cx.listener(|s, _: &crate::shortcuts::ReaderEnd, _, cx| s.scroll_reader(2, cx)),
+                )
                 .on_action(
                     cx.listener(|s, _: &crate::shortcuts::CopyReaderSelection, _, cx| {
                         s.copy_reader_selection(cx)
@@ -161,8 +178,11 @@ pub fn view(
                 .child(
                     img(ImageSource::Image(rendered.image.clone()))
                         .id(format!("reader-blitz-image:{key}"))
-                        .w(px(rendered.width))
-                        .h(px(rendered.height)),
+                        .absolute()
+                        .left(px(rendered.area.x))
+                        .top(px(rendered.area.y))
+                        .w(px(rendered.area.width))
+                        .h(px(rendered.area.height)),
                 );
             for (index, link) in rendered.links.iter().enumerate() {
                 surface = surface.child(
@@ -177,6 +197,30 @@ pub fn view(
                         .cursor_pointer(),
                 );
             }
+            let accessible = rendered.accessible.clone();
+            let scale = rendered.viewport.scale as f64;
+            surface = surface.a11y_synthetic_children(move |tree| {
+                let origin = tree.parent_node().bounds().unwrap_or_default();
+                for block in accessible.iter() {
+                    let id = tree.synthetic_node_id(block.key);
+                    let mut node = accesskit::Node::new(Role::TextRun);
+                    node.set_value(block.text.to_string());
+                    node.set_character_lengths(
+                        block
+                            .text
+                            .chars()
+                            .map(|c| c.len_utf8() as u8)
+                            .collect::<Vec<_>>(),
+                    );
+                    node.set_bounds(accesskit::Rect {
+                        x0: origin.x0 + block.bounds.x as f64 * scale,
+                        y0: origin.y0 + block.bounds.y as f64 * scale,
+                        x1: origin.x0 + (block.bounds.x + block.bounds.width) as f64 * scale,
+                        y1: origin.y0 + (block.bounds.y + block.bounds.height) as f64 * scale,
+                    });
+                    tree.push_child(id, node);
+                }
+            });
             for (index, rect) in state.reader_selection.rects.iter().enumerate() {
                 surface = surface.child(
                     div()
@@ -206,6 +250,7 @@ pub fn view(
                 .id("reader-scroll")
                 .size_full()
                 .overflow_scroll()
+                .role(Role::ScrollView)
                 .track_scroll(&state.reader_scroll)
                 .child(surface)
                 .into_any_element()

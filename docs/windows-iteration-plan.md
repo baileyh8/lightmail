@@ -208,14 +208,18 @@ flowchart LR
 
 整封 PNG 仍有尺寸预算，超限使用 Markdown；分块绘制、正文可访问性和多屏/物理键盘验收列为后续，不据此标记完整浏览器兼容能力已完成。
 
+### I7.3 视口绘制与可访问正文（2026-10-02）
+
+已将整封 PNG 改为有界视口区域，保留完整布局与跨区域选区；长正文尾部可通过阅读动作定位。新增 Document / TextRun 可访问节点，并由限定到合成窗口的 Windows UI Automation 客户端验证 TextPattern 能读取首部及屏幕外尾部。Windows 25 项回归、核心 56 项、30 项原生验收和 20 封真实缓存邮件的 180 组检查通过。内存及剩余验收边界见 [视口与可访问性记录](windows-blitz-viewport-accessibility.md)。
+
 ## 5. 风险
 
-原文 HTML 已切换为 Blitz；早期 Kit HTML 崩溃路径不再承载原文阅读。当前采用有界整封 PNG 和 GPUI 交互适配，下一步根据实际长邮件瓶颈评估分块绘制，保留兼容回归及可访问性验收。历史调研见 [排版记录](windows-html-renderer-research.md)。
+原文 HTML 已切换为 Blitz；早期 Kit HTML 崩溃路径不再承载原文阅读。当前采用有界视口绘图和 GPUI 交互适配，保留真实样本兼容、多屏/物理键盘及完整屏幕阅读器体验验收。历史调研见 [排版记录](windows-html-renderer-research.md)。
 
 | 风险 | 应对 |
 | --- | --- |
 | gpui 0.2.2 到 gpui-pre 0.3.7 的 API 差异 | 逐文件移植；每次提交都保证能编译、测试能通过 |
-| Blitz 为 beta，整封 PNG 仍有绘图上限 | 用真实样本和合成回归验证；超限保留 Markdown 正文，后续评估分块绘制 |
+| Blitz 为 beta，极端布局或视口仍有安全上限 | 用真实样本和合成回归验证；有界视口绘图，超限保留 Markdown 正文 |
 | 图片的压缩字节与解码像素都可能增长 | 逐封允许、Rust 下载器、数量/缓存字节/像素预算、旧结果丢弃 |
 | Kit 可能需要比默认 stable 更新的 Rust | 构建脚本和 CI 固定到验证过的版本 |
 | 上游继续修改 `desktop/` | 定期 rebase；核心修复单独提交，方便拆成上游 PR |

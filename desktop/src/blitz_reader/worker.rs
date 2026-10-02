@@ -1,4 +1,4 @@
-use super::{downloads, ReaderViewport, Rendered, Select, Selected, Session};
+use super::{downloads, Point, ReaderViewport, Rendered, Select, Selected, Session};
 use lightmail_core::PlatformServices;
 use std::sync::{atomic::Ordering, Arc, Condvar, Mutex};
 
@@ -25,6 +25,7 @@ struct Pending {
     clear: bool,
     repaint: bool,
     closed: bool,
+    scroll: Option<(u64, Point)>,
 }
 struct Active {
     generation: u64,
@@ -70,13 +71,14 @@ impl Worker {
                 });
                 let mut active: Option<Active> = None;
                 loop {
-                    let (load, selection, clear, repaint) = {
+                    let (load, selection, clear, repaint, scroll) = {
                         let mut state = work.0.lock().unwrap();
                         while !state.closed
                             && state.load.is_none()
                             && state.selection.is_none()
                             && !state.clear
                             && !state.repaint
+                            && state.scroll.is_none()
                         {
                             state = work.1.wait(state).unwrap();
                         }
@@ -88,6 +90,7 @@ impl Worker {
                             state.selection.take(),
                             std::mem::take(&mut state.clear),
                             std::mem::take(&mut state.repaint),
+                            state.scroll.take(),
                         )
                     };
                     if clear {
@@ -102,7 +105,7 @@ impl Worker {
                             let reuse = active.as_ref().is_some_and(|a| {
                                 a.key == load.key
                                     && a.images == load.images
-                                    && a.session.source == load.html
+                                    && a.session.source.as_ref() == load.html
                             });
                             if !reuse {
                                 drop(active.take());
@@ -160,12 +163,21 @@ impl Worker {
                             }
                         }
                     }
-                    if repaint && !had_load {
+                    if (repaint && !had_load) || scroll.is_some() {
                         if let Some(a) = active.as_mut() {
                             if work.0.lock().unwrap().generation == a.generation {
+                                if let Some((generation, point)) = scroll {
+                                    if generation == a.generation {
+                                        a.session.scroll = point;
+                                    }
+                                }
                                 let result =
                                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                        a.session.paint()
+                                        if repaint && !had_load {
+                                            a.session.paint()
+                                        } else {
+                                            a.session.paint_region(false)
+                                        }
                                     }))
                                     .unwrap_or_else(|_| Err(anyhow::anyhow!("图片重排失败")));
                                 let failed = result.is_err();
@@ -206,6 +218,7 @@ impl Worker {
         state.selection = None;
         state.clear = false;
         state.repaint = false;
+        state.scroll = None;
         self.pending.1.notify_one();
         receiver
     }
@@ -222,12 +235,20 @@ impl Worker {
         }
         receiver
     }
+    pub fn scroll(&self, generation: u64, point: Point) {
+        let mut state = self.pending.0.lock().unwrap();
+        if state.generation == generation {
+            state.scroll = Some((generation, point));
+            self.pending.1.notify_one();
+        }
+    }
     pub fn clear(&self, generation: u64) {
         let mut state = self.pending.0.lock().unwrap();
         state.generation = generation;
         state.load = None;
         state.selection = None;
         state.clear = true;
+        state.scroll = None;
         self.pending.1.notify_one();
     }
 }

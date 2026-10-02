@@ -118,6 +118,7 @@ pub struct MailDesktop {
     pub reader_surface: Bounds<Pixels>,
     pub reader_selection: crate::blitz_reader::Selected,
     reader_viewport: crate::blitz_reader::ReaderViewport,
+    reader_paint_request: Option<crate::blitz_reader::Point>,
     reader_worker: crate::blitz_reader::Worker,
     reader_resize_task: Option<Task<()>>,
     reader_selection_task: Option<Task<()>>,
@@ -305,6 +306,7 @@ impl MailDesktop {
             reader_surface: Bounds::default(),
             reader_selection: Default::default(),
             reader_viewport: Default::default(),
+            reader_paint_request: None,
             reader_worker: crate::blitz_reader::Worker::new(),
             reader_resize_task: None,
             reader_selection_task: None,
@@ -1439,6 +1441,7 @@ impl MailDesktop {
         self.blitz_task = None;
         self.clear_reader_selection(cx);
         self.reader = None;
+        self.reader_paint_request = None;
         let Some(body) = &self.body else {
             self.reader_worker.clear(self.blitz_generation);
             return;
@@ -1480,8 +1483,9 @@ impl MailDesktop {
                                         s.loading = true;
                                         return;
                                     }
-                                    s.reader_anchor = None; // a reflow ends pointer capture but preserves the completed text range
-                                    s.reader_selection = rendered.selection.clone();
+                                    let changed=!matches!(s.reader.as_ref(),Some(crate::reader::Document::Blitz(old)) if old.layout_revision==rendered.layout_revision);
+                                    if changed {s.reader_anchor=None;s.reader_paint_request=None;}
+                                    if let Some(selected)=&rendered.selection {s.reader_selection=selected.clone();}
                                     s.reader =
                                         Some(crate::reader::Document::Blitz(Arc::new(rendered)));
                                     s.reader_error = None;
@@ -1521,6 +1525,7 @@ impl MailDesktop {
             return;
         };
         if self.reader_viewport == viewport {
+            self.measure_reader_scroll(cx);
             return;
         }
         self.reader_viewport = viewport;
@@ -1537,6 +1542,47 @@ impl MailDesktop {
                 cx.notify();
             });
         }));
+    }
+    fn measure_reader_scroll(&mut self, _cx: &mut Context<Self>) {
+        let Some(crate::reader::Document::Blitz(rendered)) = &self.reader else {
+            return;
+        };
+        let offset = self.reader_scroll.offset();
+        let point = crate::blitz_reader::Point {
+            x: (-f32::from(offset.x)).clamp(
+                0.,
+                (rendered.width - rendered.viewport.width as f32).max(0.),
+            ),
+            y: (-f32::from(offset.y)).clamp(
+                0.,
+                (rendered.height - rendered.viewport.height as f32).max(0.),
+            ),
+        };
+        let covered = rendered.area.covers(point, rendered.viewport);
+        let near_end = point.y + rendered.viewport.height as f32 + 128.
+            > rendered.area.y + rendered.area.height
+            && rendered.area.y + rendered.area.height < rendered.height;
+        if (!covered || near_end) && self.reader_paint_request != Some(point) {
+            self.reader_paint_request = Some(point);
+            self.reader_worker.scroll(self.blitz_generation, point);
+        }
+    }
+    pub fn scroll_reader(&mut self, direction: i32, cx: &mut Context<Self>) {
+        let Some(crate::reader::Document::Blitz(rendered)) = &self.reader else {
+            return;
+        };
+        let offset = self.reader_scroll.offset();
+        let max = (rendered.height - rendered.viewport.height as f32).max(0.);
+        let current = -f32::from(offset.y);
+        let target = match direction {
+            2 => max,
+            -2 => 0.,
+            _ => {
+                (current + direction as f32 * rendered.viewport.height as f32 * 0.9).clamp(0., max)
+            }
+        };
+        self.reader_scroll.set_offset(point(offset.x, px(-target)));
+        cx.notify();
     }
     pub fn clear_reader_selection(&mut self, _cx: &mut Context<Self>) {
         self.reader_selection = Default::default();

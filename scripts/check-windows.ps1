@@ -8,6 +8,10 @@ $workspace = (Get-Location).Path
 $output = [IO.Path]::GetFullPath((Join-Path $workspace $OutputDirectory))
 if (-not $output.StartsWith((Join-Path $workspace 'build') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Acceptance output must be under this workspace build directory' }
 $root = (New-Item -ItemType Directory -Force $output).FullName
+$a11yProbe=Join-Path $root 'reader-accessibility.exe'
+$framework=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319'
+& "$framework/csc.exe" /nologo /target:exe "/out:$a11yProbe" "/reference:$framework/WPF/UIAutomationClient.dll" "/reference:$framework/WPF/UIAutomationTypes.dll" (Join-Path $PSScriptRoot 'windows-reader-accessibility.cs')
+if($LASTEXITCODE -ne 0){throw 'Accessibility fixture did not compile'}
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
 function Reset-FixtureDirectory([string]$path) {
     $resolved = [IO.Path]::GetFullPath($path)
@@ -89,7 +93,11 @@ if (-not $InstallerOnly) {
     Reset-FixtureDirectory $report
     if ([WindowCapture]::ExtractIconEx($Executable, -1, [IntPtr]::Zero, [IntPtr]::Zero, 0) -lt 1) { throw 'Executable has no application icon resource' }
     if ($SoakReads -gt 0) { $env:LIGHTMAIL_SOAK_READS = "$SoakReads" }
-    $process = Start-Process $Executable -WindowStyle Hidden -ArgumentList @('--demo','--run-acceptance','--data-dir',"`"$data`"",'--acceptance-dir',"`"$report`"") -PassThru
+    $previousA11y=$env:LIGHTMAIL_A11Y_PROBE
+    try {
+        $env:LIGHTMAIL_A11Y_PROBE=$a11yProbe
+        $process = Start-Process $Executable -WindowStyle Hidden -ArgumentList @('--demo','--run-acceptance','--data-dir',"`"$data`"",'--acceptance-dir',"`"$report`"") -PassThru
+    } finally { $env:LIGHTMAIL_A11Y_PROBE=$previousA11y }
     Remove-Item Env:LIGHTMAIL_SOAK_READS -ErrorAction SilentlyContinue
     $deadline = [DateTime]::UtcNow.AddSeconds(150 + 2 * $SoakReads); $peak = 0; $captured = $false
     $curve = [System.Collections.Generic.List[object]]::new(); $lastRead = 0; $rest = $null

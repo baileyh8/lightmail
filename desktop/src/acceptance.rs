@@ -299,7 +299,7 @@ async fn soak(
 fn document_text(view: &Entity<MailDesktop>, cx: &App) -> Option<String> {
     Some(match view.read(cx).reader.as_ref()? {
         Document::Markdown(text) | Document::Html(text) => text.to_string(),
-        Document::Blitz(rendered) => rendered.source.clone(),
+        Document::Blitz(rendered) => rendered.source.to_string(),
         Document::Bilingual(pairs) => pairs
             .iter()
             .map(|(source, target)| format!("{source} {target}"))
@@ -487,6 +487,106 @@ async fn reader_selection(
     Ok(())
 }
 
+async fn long_reader(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    path: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    handle.update(cx,|_,_,cx|view.update(cx,|s,cx| {
+        s.body.as_mut().unwrap().html="<body style='margin:0'><div style='height:20000px;background:#ffe4e4'>Long header 中文</div><div style='height:640px;background:#d2f2dc;display:flex;align-items:flex-end'>Long tail 中文</div></body>".into();
+        s.reader_scroll.set_offset(Point::default());s.reader_dirty=true;s.update_reader(cx);cx.notify();
+    }))?;
+    for _ in 0..60 {
+        pause(cx).await;
+        if handle.update(cx,|_,_,cx|matches!(view.read(cx).reader.as_ref(),Some(Document::Blitz(r)) if r.height>=20640.))?{break;}
+    }
+    handle.update(cx, |_, window, cx| {
+        let s = view.read(cx);
+        let Some(Document::Blitz(r)) = &s.reader else {
+            anyhow::bail!("Long mail fell back instead of region rendering");
+        };
+        anyhow::ensure!(
+            r.height >= 20640. && r.area.height <= r.viewport.height as f32 + 512.,
+            "Long mail allocated a full-page image"
+        );
+        let focus = s.reader_focus.clone();
+        window.focus(&focus, cx);
+        window.dispatch_action(Box::new(crate::shortcuts::ReaderEnd), cx);
+        Ok::<_, anyhow::Error>(())
+    })??;
+    for _ in 0..60 {
+        pause(cx).await;
+        if handle.update(cx,|_,_,cx|matches!(view.read(cx).reader.as_ref(),Some(Document::Blitz(r)) if r.area.y>19000.))? {break;}
+    }
+    handle.update(cx, |_, window, cx| {
+        let s = view.read(cx);
+        anyhow::ensure!(
+            matches!(s.reader.as_ref(),Some(Document::Blitz(r)) if r.area.y>19000.),
+            "End did not paint the long mail tail"
+        );
+        window.dispatch_action(Box::new(crate::shortcuts::SelectReaderAll), cx);
+        Ok::<_, anyhow::Error>(())
+    })??;
+    for _ in 0..40 {
+        pause(cx).await;
+        if handle.update(cx, |_, _, cx| {
+            view.read(cx)
+                .reader_selection
+                .text
+                .contains("Long tail 中文")
+        })? {
+            break;
+        }
+    }
+    handle.update(cx, |_, window, cx| {
+        let text = &view.read(cx).reader_selection.text;
+        anyhow::ensure!(
+            text.contains("Long header 中文") && text.contains("Long tail 中文"),
+            "Cross-region select-all lost text"
+        );
+        window.dispatch_action(Box::new(crate::shortcuts::CopyReaderSelection), cx);
+        Ok::<_, anyhow::Error>(())
+    })??;
+    pause(cx).await;
+    screenshot(path, "windows-reader-long-tail", cx).await?;
+    #[cfg(windows)]
+    {
+        let executable = std::env::var("LIGHTMAIL_A11Y_PROBE")
+            .map_err(|_| anyhow::anyhow!("Accessibility helper missing"))?;
+        let result = cx
+            .background_spawn(async move {
+                use std::os::windows::process::CommandExt;
+                std::process::Command::new(executable)
+                    .arg(std::process::id().to_string())
+                    .creation_flags(0x08000000)
+                    .output()
+            })
+            .await?;
+        std::fs::write(path.join("reader-accessibility.txt"), &result.stdout)?;
+        anyhow::ensure!(
+            result.status.success(),
+            "Accessibility fixture failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    handle.update(cx, |_, window, cx| {
+        window.dispatch_action(Box::new(crate::shortcuts::ReaderStart), cx)
+    })?;
+    for _ in 0..40 {
+        pause(cx).await;
+        if handle.update(cx,|_,_,cx|matches!(view.read(cx).reader.as_ref(),Some(Document::Blitz(r)) if r.area.y==0.))?{break;}
+    }
+    handle.update(cx, |_, _, cx| {
+        anyhow::ensure!(
+            matches!(view.read(cx).reader.as_ref(),Some(Document::Blitz(r)) if r.area.y==0.),
+            "Home did not repaint the header"
+        );
+        Ok::<_, anyhow::Error>(())
+    })??;
+    Ok(())
+}
+
 #[cfg(windows)]
 async fn tray_lifecycle(
     view: &Entity<MailDesktop>,
@@ -620,6 +720,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
                 Ok::<_,anyhow::Error>(())
             })??;
             reader_selection(&view,handle,&path,cx).await?;
+            long_reader(&view,handle,&path,cx).await?;
             // Opting in decodes embedded images, but never reaches local files.
             handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{s.images=true;cx.notify();}))?;
             handle.update(cx,|_,_,cx|{
@@ -652,7 +753,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Opt-in long run for the memory curve; synthetic demo mail only.
             let reads=std::env::var("LIGHTMAIL_SOAK_READS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0);
             if reads>0 {soak(&view,handle,&path,reads,cx).await?;}
-            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
+            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","reader-bounded-long-document","reader-keyboard-home-end","reader-cross-region-copy","reader-uia-text-pattern","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
         }.await;
         let report=match result{Ok(v)=>v,Err(e)=>serde_json::json!({"passed":false,"error":format!("{e:#}")})};
         let _=std::fs::create_dir_all(&path);let _=std::fs::write(path.join("native-acceptance.json"),report.to_string());

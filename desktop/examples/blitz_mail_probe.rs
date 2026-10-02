@@ -8,9 +8,10 @@ mod image_types;
 #[cfg(test)]
 #[path = "../src/platform.rs"]
 mod platform;
-use blitz_reader::{ReaderViewport, Select, Worker};
+use blitz_reader::{Point, ReaderViewport, Rendered, Select, Worker};
 use lightmail_core::{PlatformServices, ProxyRoute, Result};
 use serde_json::json;
+use std::io::Write;
 use std::{
     path::Path,
     sync::Arc,
@@ -44,6 +45,48 @@ fn receive<T>(rx: async_channel::Receiver<T>) -> anyhow::Result<T> {
             }
         }
     }
+}
+// Export full-document screenshots by streaming bounded viewport regions;
+// the product never allocates this full-document RGBA buffer.
+fn full_png(
+    worker: &Worker,
+    generation: u64,
+    frames: async_channel::Receiver<anyhow::Result<Rendered>>,
+    mut frame: Rendered,
+    path: &Path,
+) -> anyhow::Result<()> {
+    let width = image::load_from_memory(&frame.image.bytes)?.width();
+    let height = (frame.height * frame.viewport.scale).ceil() as u32;
+    let mut encoder = png::Encoder::new(std::fs::File::create(path)?, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut output = encoder.write_header()?.into_stream_writer()?;
+    let mut row = 0;
+    while row < height {
+        let pixels = image::load_from_memory(&frame.image.bytes)?.into_rgba8();
+        let top = (frame.area.y * frame.viewport.scale).round() as u32;
+        anyhow::ensure!(
+            row >= top && row < top + pixels.height(),
+            "Region did not cover export row"
+        );
+        anyhow::ensure!(pixels.width() == width, "Export width changed");
+        let count = (pixels.height() - (row - top)).min(height - row);
+        let start = ((row - top) * width * 4) as usize;
+        output.write_all(&pixels.as_raw()[start..start + (count * width * 4) as usize])?;
+        row += count;
+        if row < height {
+            worker.scroll(
+                generation,
+                Point {
+                    x: 0.,
+                    y: row as f32 / frame.viewport.scale,
+                },
+            );
+            frame = receive(frames.clone())??;
+        }
+    }
+    output.finish()?;
+    Ok(())
 }
 fn main() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
@@ -82,7 +125,7 @@ fn main() -> anyhow::Result<()> {
             for scale in [1., 1.5, 2.] {
                 generation += 1;
                 let started = Instant::now();
-                let rendered = receive(worker.load(
+                let frames = worker.load(
                     generation,
                     index.to_string(),
                     html.clone(),
@@ -93,7 +136,8 @@ fn main() -> anyhow::Result<()> {
                     },
                     false,
                     Arc::new(Offline),
-                ))??;
+                );
+                let rendered = receive(frames.clone())??;
                 let render_ms = started.elapsed().as_secs_f64() * 1000.;
                 let selected = receive(worker.select(generation, Select::All))?;
                 anyhow::ensure!(
@@ -110,13 +154,16 @@ fn main() -> anyhow::Result<()> {
                     pixels.width() >= (width as f32 * scale) as u32,
                     "Physical viewport too narrow"
                 );
+                metrics.push(json!({"sample":index+1,"width":width,"scale":scale,"renderMs":render_ms,"logicalHeight":rendered.height,"physicalPixels":[pixels.width(),pixels.height()],"selectionBytes":selected.text.len(),"selectionRects":selected.rects.len(),"horizontalOverflow":rendered.width>width as f32+1.}));
                 if width == 720 && scale == 1. {
-                    std::fs::write(
-                        output.join(format!("private-mail-{:02}.png", index + 1)),
-                        &rendered.image.bytes,
+                    full_png(
+                        &worker,
+                        generation,
+                        frames,
+                        rendered,
+                        &output.join(format!("private-mail-{:02}.png", index + 1)),
                     )?;
                 }
-                metrics.push(json!({"sample":index+1,"width":width,"scale":scale,"renderMs":render_ms,"logicalHeight":rendered.height,"physicalPixels":[pixels.width(),pixels.height()],"selectionBytes":selected.text.len(),"selectionRects":selected.rects.len(),"horizontalOverflow":rendered.width>width as f32+1.}));
             }
         }
     }
