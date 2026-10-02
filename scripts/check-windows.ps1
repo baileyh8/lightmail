@@ -10,7 +10,7 @@ if (-not $output.StartsWith((Join-Path $workspace 'build') + [IO.Path]::Director
 $root = (New-Item -ItemType Directory -Force $output).FullName
 $a11yProbe=Join-Path $root 'reader-accessibility.exe'
 $framework=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319'
-& "$framework/csc.exe" /nologo /target:exe "/out:$a11yProbe" "/reference:$framework/WPF/UIAutomationClient.dll" "/reference:$framework/WPF/UIAutomationTypes.dll" (Join-Path $PSScriptRoot 'windows-reader-accessibility.cs')
+& "$framework/csc.exe" /nologo /target:exe "/out:$a11yProbe" "/reference:$framework/WPF/UIAutomationClient.dll" "/reference:$framework/WPF/UIAutomationTypes.dll" "/reference:$framework/WPF/WindowsBase.dll" (Join-Path $PSScriptRoot 'windows-reader-accessibility.cs')
 if($LASTEXITCODE -ne 0){throw 'Accessibility fixture did not compile'}
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
 function Reset-FixtureDirectory([string]$path) {

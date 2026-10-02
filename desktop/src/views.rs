@@ -3,7 +3,7 @@ use crate::shortcuts::*;
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     dialog::{Cancel, Confirm, DialogFooter},
-    input::{Input, Textarea, TextareaState},
+    input::{Input, InputState, Textarea},
     Disableable, Selectable, Sizable, WindowExt as _,
 };
 use gpui_kit::component::{
@@ -115,10 +115,11 @@ impl MailDesktop {
         let web = matches!(parsed.scheme(), "http" | "https");
         let destination = parsed.host_str().map(str::to_owned);
         let address = cx.new(|cx| {
-            let mut state = TextareaState::new(window, cx).rows(4);
+            let mut state = InputState::new(window, cx);
             state.set_value(href.clone(), window, cx);
             state
         });
+        let copied = std::rc::Rc::new(std::cell::Cell::new(false));
         let view = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let confirmed_view = view.clone();
@@ -126,6 +127,9 @@ impl MailDesktop {
             let closed_view = view.clone();
             let closed_href = href.clone();
             let focused_address = address.clone();
+            let copy_view = view.clone();
+            let copy_href = href.clone();
+            let copy_feedback = copied.clone();
             alert
                 .title(if web {
                     "打开邮件中的链接？"
@@ -133,27 +137,27 @@ impl MailDesktop {
                     "打开邮件地址？"
                 })
                 .description(if web {
-                    "确认后将使用系统默认浏览器打开以下地址。"
+                    format!(
+                        "确认后使用系统默认浏览器访问 {}。",
+                        destination.as_deref().unwrap_or_default()
+                    )
                 } else {
-                    "确认后将使用系统默认邮件应用打开以下地址。"
+                    "确认后使用系统默认邮件应用打开。".to_owned()
                 })
                 .width(px(560.))
                 .confirm()
                 .child(
-                    column()
-                        .gap_2()
-                        .when_some(destination.clone(), |col, host| {
-                            col.child(muted("目标网站"))
-                                .child(div().font_weight(FontWeight::SEMIBOLD).child(host))
-                        })
-                        .child(muted("完整地址（可选择复制）"))
+                    row()
+                        .w_full()
                         .child(
-                            // Kit 0.7's textarea enforces readonly but its frame
+                            // Kit 0.7's input enforces readonly but its frame
                             // does not declare it to AccessKit. Own that semantic
                             // frame here without patching the shared component.
                             div()
                                 .id("reader-link-address-frame")
-                                .role(Role::MultilineTextInput)
+                                .flex_1()
+                                .min_w_0()
+                                .role(Role::TextInput)
                                 .accessibility_id("reader-link-address")
                                 .aria_label("链接完整地址")
                                 .aria_value(href.clone())
@@ -163,14 +167,35 @@ impl MailDesktop {
                                 .on_a11y_action(AccessibleAction::Focus, move |_, window, cx| {
                                     focused_address.update(cx, |state, cx| state.focus(window, cx));
                                 })
-                                .child(
-                                    Textarea::new(&address)
+                                .child(line_input(
+                                    Input::new(&address)
                                         .readonly(true)
                                         .role(None::<Role>)
-                                        .h(px(112.))
                                         .w_full(),
-                                ),
-                        ),
+                                    32.,
+                                )),
+                        )
+                        .child(probe_for(
+                            "reader-link-copy",
+                            Button::new("reader-link-copy")
+                                .label(if copied.get() {
+                                    "已复制"
+                                } else {
+                                    "复制网址"
+                                })
+                                .icon(icon("copy"))
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy_href.clone(),
+                                    ));
+                                    copy_feedback.set(true);
+                                    let _ = copy_view.update(cx, |s, cx| {
+                                        s.record("reader-link-copy");
+                                        cx.notify();
+                                    });
+                                }),
+                            view.clone(),
+                        )),
                 )
                 .footer(
                     DialogFooter::new()

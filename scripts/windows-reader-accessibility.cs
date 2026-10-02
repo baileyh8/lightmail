@@ -12,6 +12,7 @@ class ReaderAccessibilityProbe {
     [DllImport("user32.dll")] static extern bool EnumWindows(Visitor visitor, IntPtr data);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window,StringBuilder name,int length);
+    [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
     [MTAThread]
     static int Main(string[] args) {
         try {
@@ -37,7 +38,9 @@ class ReaderAccessibilityProbe {
                     throw new Exception("Confirmation URL did not expose its read-only state");
                 if (pattern.Current.Value != "https://example.com/synthetic-link?t=a%2Bb%3D&next=%2Fdocs#section")
                     throw new Exception("Confirmation URL changed signed URL bytes; fixture value=" + pattern.Current.Value);
-                Console.WriteLine("UIA link confirmation: complete original URL and read-only field verified");
+                if (address.Current.BoundingRectangle.Height > 40 * GetDpiForWindow(handle) / 96.0)
+                    throw new Exception("Confirmation URL retained an oversized multiline field");
+                Console.WriteLine("UIA link confirmation: complete original URL, read-only state and compact field verified");
                 return 0;
             }
             var deadline = Stopwatch.StartNew();

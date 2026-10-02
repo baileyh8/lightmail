@@ -20,6 +20,7 @@ HTML mail uses the native Blitz HTML/CSS reader by default. It supports
 common email layouts; complete browser CSS compatibility is not promised.
 Use the reading menu to switch to clean Markdown reading when needed.
 Clicking a message link shows its target website and complete address.
+Use Copy URL to copy the full address while keeping the confirmation open.
 Confirm to open HTTP/HTTPS links in your default browser; Cancel or Esc
 keeps them closed. Mailto links use your default mail application after confirmation.
 

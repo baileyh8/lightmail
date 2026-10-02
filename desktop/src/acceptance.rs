@@ -580,6 +580,24 @@ async fn reader_link_confirmation(
         })
     })??;
     screenshot(path, "windows-reader-link-confirmation", cx).await?;
+    click(view, handle, "reader-link-copy", false, cx)?;
+    pause(cx).await;
+    handle.update(cx, |_, window, cx| {
+        let dialog = window.has_active_dialog(cx);
+        let s = view.read(cx);
+        anyhow::ensure!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref()
+                == Some(READER_TEST_URL)
+                && s.pending_reader_link.as_deref() == Some(READER_TEST_URL)
+                && dialog
+                && reader_link_opens(s) == opens,
+            "Copy URL changed the target, closed the dialog or opened a browser"
+        );
+        Ok::<_, anyhow::Error>(())
+    })??;
+    screenshot(path, "windows-reader-link-copied", cx).await?;
     #[cfg(windows)]
     {
         let executable = std::env::var("LIGHTMAIL_A11Y_PROBE")?;
@@ -652,6 +670,35 @@ async fn reader_link_confirmation(
             Ok::<_, anyhow::Error>(())
         })
     })??;
+    // A horizontally scrolled address still copies its complete original bytes.
+    let long_url = format!(
+        "https://example.test/signed?token={}#section",
+        "abc%2B".repeat(256)
+    );
+    handle.update(cx, |_, window, cx| {
+        view.update(cx, |s, cx| {
+            s.request_reader_link(&long_url, window, cx);
+        })
+    })?;
+    pause(cx).await;
+    click(view, handle, "reader-link-copy", false, cx)?;
+    pause(cx).await;
+    handle.update(cx, |_, _, cx| {
+        anyhow::ensure!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref()
+                == Some(long_url.as_str())
+                && view.read(cx).pending_reader_link.as_deref() == Some(long_url.as_str())
+                && reader_link_opens(view.read(cx)) == opens + 1,
+            "Long URL copy was truncated or navigated"
+        );
+        Ok::<_, anyhow::Error>(())
+    })??;
+    screenshot(path, "windows-reader-link-long-url", cx).await?;
+    click(view, handle, "reader-link-cancel", false, cx)?;
+    pause(cx).await;
+    pause(cx).await;
     Ok(())
 }
 
@@ -1114,7 +1161,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Opt-in long run for the memory curve; synthetic demo mail only.
             let reads=std::env::var("LIGHTMAIL_SOAK_READS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0);
             if reads>0 {soak(&view,handle,&path,reads,cx).await?;}
-            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","reader-link-confirm-cancel","reader-link-escape-cancel","reader-link-confirm-once","reader-link-original-url","reader-text-link-confirmation","reader-bounded-long-document","reader-keyboard-home-end","reader-cross-region-copy","reader-uia-text-pattern","reader-uia-selected-range","reader-uia-selection-action","reader-native-dpi-transition","reader-native-page-down","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
+            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","reader-link-confirm-cancel","reader-link-escape-cancel","reader-link-confirm-once","reader-link-original-url","reader-link-copy","reader-link-long-url-copy","reader-text-link-confirmation","reader-bounded-long-document","reader-keyboard-home-end","reader-cross-region-copy","reader-uia-text-pattern","reader-uia-selected-range","reader-uia-selection-action","reader-native-dpi-transition","reader-native-page-down","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
         }.await;
         let report=match result{Ok(v)=>v,Err(e)=>serde_json::json!({"passed":false,"error":format!("{e:#}")})};
         let _=std::fs::create_dir_all(&path);let _=std::fs::write(path.join("native-acceptance.json"),report.to_string());

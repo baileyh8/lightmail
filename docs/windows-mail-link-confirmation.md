@@ -8,7 +8,7 @@
 
 - HTTP / HTTPS 使用系统默认浏览器；`mailto:` 保留系统默认邮件应用行为，并使用对应的确认文案。
 - HTML、Markdown、翻译正文及双语两栏复用同一入口；旧 Kit HTML 分支也受约束。
-- 地址框只读，支持选择与复制。目标网站取自解析后的主机名；完整地址与系统打开参数保留原字符串，不重写签名查询、转义或片段。
+- 地址使用 32px 高的只读单行输入框，长网址可横向查看；「复制网址」按钮复制完整原始地址，并显示「已复制」，弹窗保持打开。目标网站取自解析后的主机名，合并到说明文字；完整地址与系统打开参数保留原字符串，不重写签名查询、转义或片段。
 - 禁止 `javascript:`、`file:`、`data:`、Windows 自定义协议及含控制字符的地址。
 - 活跃确认框期间不替换目标、不叠加弹窗；确认后消费该请求，重复或陈旧回调不会再次打开。
 - 使用 Kit AlertDialog 的模态、焦点限制和焦点恢复。针对 Kit 0.7 地址框缺失的只读辅助功能声明，在本地展示适配器补充 AccessKit 元数据。
@@ -29,4 +29,10 @@ Windows 26 项回归、核心 56 项测试通过（核心原有 4 项忽略）�
 
 自动验收只操作隔离的示例窗口，拦截外部打开并记录确认后的调用。它验证确认门槛和传入地址，不会访问真实邮件链接、跟踪链接或第三方网页，也不证明目标网站的网络可用性。
 
-组件行为依据 [Kit AlertDialog 文档](https://github.com/longbridge/gpui-kit/blob/main/website/component/alert-dialog.md) 和 [Textarea 文档](https://github.com/longbridge/gpui-kit/blob/main/website/component/textarea.md)，具体实现按锁定的 0.7.0 源码核对。
+## 紧凑布局与复制按钮补充验证
+
+移除原来 112px 高的 textarea 及重复的标签行，普通网址的弹窗高度从约 305px 缩至 150px。复制按钮直接取当前弹窗的完整地址，长网址即使超出输入框可见宽度，仍完整复制，不触发导航或关闭弹窗。
+
+Windows 26 项回归、核心 56 项通过（4 项按原约定忽略）；原生验收增至 41 项，另有阅读区像素检查。真实鼠标点击验证普通网址及超过 1500 字节的网址复制结果、弹窗仍在、目标未改变、没有额外打开请求；UI Automation 核对地址值、只读状态及单行高度。证据保存在 `build/windows-mail-link-copy-compact-20261002-verified/`，截图为合成邮件。
+
+组件行为依据 [Kit AlertDialog 文档](https://github.com/longbridge/gpui-kit/blob/main/website/component/alert-dialog.md) 和 [Input 文档](https://github.com/longbridge/gpui-kit/blob/main/website/component/input.md)，具体实现按锁定的 0.7.0 源码核对。
