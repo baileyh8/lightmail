@@ -50,6 +50,25 @@ pub trait PlatformServices: Send + Sync {
     fn proxy_for(&self, host: String) -> Result<ProxyRoute>;
 }
 
+#[derive(Default)]
+pub(crate) struct OfflinePlatform(std::sync::Mutex<std::collections::HashMap<String, String>>);
+impl PlatformServices for OfflinePlatform {
+    fn read_secret(&self, key: String) -> Result<Option<String>> {
+        Ok(self.0.lock().unwrap().get(&key).cloned())
+    }
+    fn write_secret(&self, key: String, value: String) -> Result<()> {
+        self.0.lock().unwrap().insert(key, value);
+        Ok(())
+    }
+    fn remove_secret(&self, key: String) -> Result<()> {
+        self.0.lock().unwrap().remove(&key);
+        Ok(())
+    }
+    fn proxy_for(&self, _: String) -> Result<ProxyRoute> {
+        Err(fail("示例模式禁止网络请求"))
+    }
+}
+
 // OS vault calls can wait behind explicit authorization in another thread. Never
 // block the network executor while the user is interacting with a platform dialog.
 pub(crate) async fn secret_read(

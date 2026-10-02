@@ -1,6 +1,6 @@
 //! Account-owned network policy. Rust-only until upstream exports the settings UI.
 use crate::{models::*, platform::*, MailEngine};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -117,6 +117,9 @@ pub(crate) fn setting_key(account: &str) -> String {
 }
 
 impl MailEngine {
+    pub fn validate_account_configuration(&self, account: &Account) -> Result<()> {
+        validate_account(&*self.connection()?, account)
+    }
     pub fn account_proxy(&self, account: &str) -> Result<AccountProxySettings> {
         self.setting(setting_key(account))?
             .map(|value| {
@@ -143,16 +146,19 @@ impl MailEngine {
         account: Account,
         proxy: Option<AccountProxySettings>,
     ) -> Result<()> {
-        if account.id.is_empty()
-            || !account.address.contains('@')
-            || account.imap_host.contains(['\r', '\n', '/'])
-            || account.smtp_host.contains(['\r', '\n', '/'])
-        {
-            return Err(fail("邮箱配置不完整"));
-        }
+        self.save_account_record_with(account, proxy, || Ok(()))
+    }
+
+    pub(crate) fn save_account_record_with(
+        &self,
+        account: Account,
+        proxy: Option<AccountProxySettings>,
+        before_commit: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
         let proxy = proxy.map(AccountProxySettings::validated).transpose()?;
         let mut db = self.connection()?;
         let tx = db.transaction().map_err(fail)?;
+        validate_account(&tx, &account)?;
         tx.execute(
             "INSERT INTO accounts VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
             params![account.id, serde_json::to_string(&account).map_err(fail)?],
@@ -162,6 +168,7 @@ impl MailEngine {
             tx.execute("INSERT INTO settings VALUES(?1,?2,?3) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated=excluded.updated",
                 params![setting_key(&account.id), serde_json::to_string(&proxy).map_err(fail)?, now()]).map_err(fail)?;
         }
+        before_commit()?;
         tx.commit().map_err(fail)?;
         self.pool.invalidate(&account.id);
         Ok(())
@@ -184,6 +191,43 @@ impl MailEngine {
             .transpose()
             .map(Option::flatten)
     }
+}
+
+fn validate_account(db: &rusqlite::Connection, account: &Account) -> Result<()> {
+    if account.id.is_empty()
+        || !account.address.contains('@')
+        || account.address.chars().any(char::is_control)
+        || account.imap_host.is_empty()
+        || account.smtp_host.is_empty()
+        || account.imap_port == 0
+        || account.smtp_port == 0
+        || [&account.imap_host, &account.smtp_host]
+            .iter()
+            .any(|host| host.chars().any(char::is_whitespace) || host.contains(['/', '\\', '@']))
+    {
+        return Err(fail("邮箱配置不完整或服务器地址无效"));
+    }
+    let previous: Option<String> = db
+        .query_row(
+            "SELECT data FROM accounts WHERE id=?1",
+            [&account.id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(fail)?;
+    if let Some(previous) = previous {
+        let old: Account = serde_json::from_str(&previous).map_err(|_| fail("旧邮箱配置损坏"))?;
+        if !old.address.eq_ignore_ascii_case(&account.address)
+            || old.provider != account.provider
+            || !old.imap_host.eq_ignore_ascii_case(&account.imap_host)
+            || old.imap_port != account.imap_port
+        {
+            return Err(fail(
+                "不能将已有账号替换为另一个邮箱或收件服务器；请添加新邮箱，原邮件和草稿会保留",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

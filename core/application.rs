@@ -59,6 +59,7 @@ pub struct MailApplication {
     sends: Mutex<HashMap<String, Job>>,
     active: AtomicBool,
     automatic_receiving: AtomicBool,
+    offline: AtomicBool,
     cancellation: Mutex<tokio_util::sync::CancellationToken>,
 }
 impl Drop for MailApplication {
@@ -86,6 +87,7 @@ impl MailApplication {
             sends: Mutex::new(HashMap::new()),
             active: AtomicBool::new(true),
             automatic_receiving: AtomicBool::new(true),
+            offline: AtomicBool::new(false),
             cancellation: Mutex::new(tokio_util::sync::CancellationToken::new()),
         })
     }
@@ -384,6 +386,7 @@ impl MailApplication {
                 if configuration.engine != "llm" {
                     return Err(fail("系统翻译须由平台语言服务执行"));
                 }
+                self.require_online()?;
                 let key = secret_read(
                     self.platform.clone(),
                     format!("translation:{}", configuration.id),
@@ -432,7 +435,136 @@ fn validate_recipients(draft: &Draft) -> Result<()> {
 // Rust-only commands used by the Windows client. They can be exported once the
 // Swift bindings are regenerated; until then macOS keeps its existing calls.
 impl MailApplication {
+    pub fn google_client_configuration(
+        &self,
+        account: Option<&str>,
+    ) -> Result<crate::GoogleClientConfiguration> {
+        if let Some(id) = account {
+            if let Some(value) = self.platform.read_secret(format!("account:{id}"))? {
+                if let Some(client) = serde_json::from_str::<GoogleTokens>(&value)
+                    .ok()
+                    .and_then(|tokens| tokens.client)
+                {
+                    return Ok(client);
+                }
+            }
+        }
+        Ok(crate::GoogleClientConfiguration {
+            client_id: self
+                .engine
+                .setting("google-client-id".into())?
+                .unwrap_or_default(),
+            client_secret: self
+                .platform
+                .read_secret("google-client-secret".into())?
+                .unwrap_or_default(),
+        })
+    }
+    pub fn begin_google_login(
+        &self,
+        account: Account,
+        client_id: String,
+        proxy: crate::AccountProxySettings,
+    ) -> Result<Arc<crate::GoogleLogin>> {
+        self.require_online()?;
+        self.engine.validate_account_configuration(&account)?;
+        if account.auth_kind != "oauth" || account.provider != "gmail" {
+            return Err(fail("此账号不是 Google 登录账号"));
+        }
+        crate::GoogleLogin::new(
+            account,
+            client_id,
+            proxy.scoped_platform(self.platform.clone())?,
+        )
+    }
+    pub async fn finish_google_login(
+        self: Arc<Self>,
+        login: Arc<crate::GoogleLogin>,
+        secret: String,
+        proxy: crate::AccountProxySettings,
+    ) -> Result<()> {
+        self.clone()
+            .command(async move {
+                self.require_online()?;
+                let proxy = proxy.validated()?;
+                let grant = login.exchange(secret).await?;
+                let guard = self
+                    .lane(&grant.account.id)
+                    .credential
+                    .clone()
+                    .lock_owned()
+                    .await;
+                tokio::task::spawn_blocking(move || {
+                    let _guard = guard;
+                    self.validate_saved_account(&grant.account)?;
+                    let key = format!("account:{}", grant.account.id);
+                    let previous = self.platform.read_secret(key.clone())?;
+                    let encoded = serde_json::to_string(&grant.token).map_err(fail)?;
+                    let mut wrote = false;
+                    // The database transaction validates and stages changes before
+                    // writing the vault. Failed commit restores the exact old grant.
+                    let result = self.engine.save_account_record_with(
+                        grant.account.clone(),
+                        Some(proxy),
+                        || {
+                            self.platform.write_secret(key.clone(), encoded)?;
+                            wrote = true;
+                            Ok(())
+                        },
+                    );
+                    if let Err(error) = result {
+                        if wrote {
+                            let restored = match previous {
+                                Some(previous) => self.platform.write_secret(key, previous),
+                                None => self.platform.remove_secret(key),
+                            };
+                            if restored.is_err() {
+                                return Err(fail("账号保存失败且旧授权恢复失败，请重新授权此邮箱"));
+                            }
+                        }
+                        return Err(error);
+                    }
+                    self.stop_account(&grant.account.id);
+                    self.data(&grant.account.id);
+                    self.reconcile_workers()
+                })
+                .await
+                .map_err(|_| fail("授权保存已中断"))?
+            })
+            .await
+    }
+    pub fn new_offline(
+        engine: Arc<MailEngine>,
+        _platform: Arc<dyn PlatformServices>,
+        observer: Arc<dyn ApplicationObserver>,
+    ) -> Arc<Self> {
+        let app = Self::new(engine, Arc::new(OfflinePlatform::default()), observer);
+        app.offline.store(true, Ordering::Release);
+        app
+    }
+    fn require_online(&self) -> Result<()> {
+        if self.offline.load(Ordering::Acquire) {
+            Err(fail(
+                "示例模式不能连接真实邮箱或在线服务，请先切换到真实模式",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn worker_count(&self) -> usize {
+        self.workers.lock().unwrap().len()
+    }
+    fn validate_saved_account(&self, account: &Account) -> Result<()> {
+        if !["demo", "local"].contains(&account.provider.as_str()) {
+            self.require_online()?;
+        }
+        self.engine.validate_account_configuration(account)
+    }
     pub fn account_platform(&self, account: &str) -> Result<Arc<dyn PlatformServices>> {
+        if self.offline.load(Ordering::Acquire) {
+            return Ok(self.platform.clone());
+        }
         self.engine
             .account_proxy(account)?
             .scoped_platform(self.platform.clone())
@@ -458,6 +590,7 @@ impl MailApplication {
                 let guard = lane.credential.clone().lock_owned().await;
                 tokio::task::spawn_blocking(move || {
                     let _guard = guard;
+                    self.validate_saved_account(&account)?;
                     let key = format!("account:{}", account.id);
                     let local = ["demo", "local"].contains(&account.provider.as_str());
                     // OAuth tokens are written only by GoogleLogin and refresh. A value
@@ -479,9 +612,9 @@ impl MailApplication {
                     let previous = if password.is_empty() {
                         None
                     } else {
-                        let previous = self.platform.read_secret(key.clone()).ok();
+                        let previous = self.platform.read_secret(key.clone())?;
                         self.platform.write_secret(key.clone(), password)?;
-                        previous
+                        Some(previous)
                     };
                     self.stop_account(&account.id);
                     if let Err(error) = self.engine.save_account_record(account.clone(), proxy) {
@@ -620,7 +753,8 @@ impl MailApplication {
         self.launch_workers()
     }
     fn launch_workers(self: &Arc<Self>) -> Result<()> {
-        if !self.automatic_receiving.load(Ordering::Relaxed) {
+        if self.offline.load(Ordering::Acquire) || !self.automatic_receiving.load(Ordering::Relaxed)
+        {
             return Ok(());
         }
         for account in self
@@ -779,6 +913,7 @@ impl MailApplication {
         if ["demo", "local"].contains(&a.provider.as_str()) {
             return Ok(String::new());
         }
+        self.require_online()?;
         let value = secret_read(self.platform.clone(), format!("account:{id}"))
             .await?
             .ok_or_else(|| fail(format!("{} 尚未授权，请在账号设置中完成登录", a.name)))?;
@@ -790,13 +925,13 @@ impl MailApplication {
         if token.expires_at > now() as f64 + 120.0 {
             return Ok(token.access_token);
         }
-        let client = self
-            .engine
-            .setting("google-client-id".into())?
-            .unwrap_or_default();
-        let secret = secret_read(self.platform.clone(), "google-client-secret".into())
-            .await?
-            .unwrap_or_default();
+        let configuration = if let Some(client) = token.client.clone() {
+            client
+        } else {
+            self.google_client_configuration(None)?
+        };
+        let client = configuration.client_id.clone();
+        let secret = configuration.client_secret.clone();
         let mut fields = vec![
             ("client_id", client),
             ("grant_type", "refresh_token".into()),
@@ -806,13 +941,14 @@ impl MailApplication {
             fields.push(("client_secret", secret));
         }
         let account_platform = self.account_platform(id)?;
-        let refreshed = auth::token_request(
+        let mut refreshed = auth::token_request(
             account_platform.as_ref(),
             fields,
             &token.refresh_token,
             &self.oauth_endpoints,
         )
         .await?;
+        refreshed.client = Some(configuration);
         self.engine.account(id)?;
         let platform = self.platform.clone();
         let key = format!("account:{id}");

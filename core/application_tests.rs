@@ -149,6 +149,7 @@ fn headless_queue_undo_and_stop_prevent_unwanted_submission() {
     let (_dir, engine, app, _platform, events) = fixture();
     let mut account = engine.accounts().unwrap().remove(0);
     account.provider = "imap".into();
+    account.id = "queue-test-real".into();
     account.enabled = false;
     engine.save_account(account.clone()).unwrap();
     let mut draft = compose_draft(account.clone(), None, None, ComposeMode::New, String::new());
@@ -203,6 +204,7 @@ fn manual_receiving_keeps_commands_and_queued_mail_alive() {
     let mut account = engine.accounts().unwrap().remove(0);
     account.provider = "imap".into();
     account.enabled = false; // No provider connection in this regression test.
+    account.id = "manual-test-real".into();
     engine.save_account(account.clone()).unwrap();
     app.clone().start().unwrap();
     let mut draft = compose_draft(account, None, None, ComposeMode::New, String::new());
@@ -588,7 +590,7 @@ fn oauth_refresh_is_single_flight_and_failure_preserves_secret() {
     crate::platform::runtime().block_on(async {
         for reject in [false,true] {
             let server=OAuthFixture::new("unused",reject);let (_dir,engine,mut app,platform,_events)=fixture();
-            let mut account=engine.accounts().unwrap().remove(0);account.provider="gmail".into();account.auth_kind="oauth".into();engine.save_account(account.clone()).unwrap();
+            let mut account=engine.accounts().unwrap().remove(0);account.provider="gmail".into();account.auth_kind="oauth".into();account.id="refresh-test".into();engine.save_account(account.clone()).unwrap();
             Arc::get_mut(&mut app).unwrap().oauth_endpoints=server.endpoints();
             engine.set_setting("google-client-id".into(),"synthetic-client".into()).unwrap();
             let original=serde_json::json!({"accessToken":"expired","refreshToken":"keep-on-failure","expiresAt":0}).to_string();
@@ -664,6 +666,216 @@ fn real_account(id: &str, provider: &str, auth: &str) -> Account {
         enabled: false,
         sent_mode: "server".into(),
     }
+}
+
+async fn complete_google_fixture(
+    app: Arc<MailApplication>,
+    account: Account,
+    server: &OAuthFixture,
+    client: &str,
+) -> Result<()> {
+    let proxy = AccountProxySettings::default();
+    let mut login = app.begin_google_login(account, client.into(), proxy.clone())?;
+    Arc::get_mut(&mut login).unwrap().endpoints = server.endpoints();
+    let url = url::Url::parse(&login.authorization_url()).unwrap();
+    let params: HashMap<_, _> = url.query_pairs().into_owned().collect();
+    let callback = format!(
+        "{}?state={}&code=synthetic",
+        params["redirect_uri"], params["state"]
+    );
+    let finished =
+        tokio::spawn(app.finish_google_login(login, "synthetic-client-secret".into(), proxy));
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .get(callback)
+        .send()
+        .await
+        .unwrap();
+    finished.await.unwrap()
+}
+
+#[test]
+fn google_signin_commit_failure_restores_old_grant_and_keeps_global_configuration() {
+    crate::platform::runtime().block_on(async {
+        let (_dir, engine, app, platform, _) = fixture();
+        let old = real_account("atomic-google", "gmail", "oauth"); engine.save_account(old.clone()).unwrap();
+        let key = format!("account:{}", old.id);
+        let previous = serde_json::json!({"accessToken":"old", "refreshToken":"old-grant", "expiresAt":0}).to_string();
+        platform.write_secret(key.clone(), previous.clone()).unwrap();
+        engine.set_setting("google-client-id".into(), "legacy-client".into()).unwrap();
+        platform.write_secret("google-client-secret".into(), "legacy-secret".into()).unwrap();
+        assert!(app.begin_google_login(old.clone(), String::new(), AccountProxySettings::default()).is_err());
+        engine.connection().unwrap().execute_batch("CREATE TABLE commit_parent(id INTEGER PRIMARY KEY); CREATE TABLE commit_child(parent INTEGER REFERENCES commit_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_google_commit AFTER UPDATE ON accounts BEGIN INSERT INTO commit_child VALUES(12345); END;").unwrap();
+        let server = OAuthFixture::new(&old.address, false);
+        assert!(complete_google_fixture(app.clone(), old.clone(), &server, "new-client").await.is_err());
+        assert_eq!(platform.read_secret(key.clone()).unwrap().unwrap(), previous);
+        assert_eq!(engine.setting("google-client-id".into()).unwrap().unwrap(), "legacy-client");
+        assert_eq!(platform.read_secret("google-client-secret".into()).unwrap().unwrap(), "legacy-secret");
+        engine.connection().unwrap().execute_batch("DROP TRIGGER fail_google_commit").unwrap();
+        complete_google_fixture(app, old.clone(), &server, "new-client").await.unwrap();
+        let token: crate::auth::GoogleTokens = serde_json::from_str(&platform.read_secret(key).unwrap().unwrap()).unwrap();
+        assert_eq!(token.client.as_ref().unwrap().client_id, "new-client");
+        assert_eq!(token.client.as_ref().unwrap().client_secret, "synthetic-client-secret");
+        assert_eq!(engine.setting("google-client-id".into()).unwrap().unwrap(), "legacy-client");
+    });
+}
+
+#[test]
+fn mailbox_identity_changes_are_rejected_before_credentials_or_cache_change() {
+    let (_dir, engine, app, platform, _) = fixture();
+    let old = real_account("stable-identity", "custom", "password");
+    engine.save_account(old.clone()).unwrap();
+    let key = format!("account:{}", old.id);
+    platform
+        .write_secret(key.clone(), "old-password".into())
+        .unwrap();
+    let rt = crate::platform::runtime();
+    for change in 0..4 {
+        let mut changed = old.clone();
+        match change {
+            0 => changed.address = "new@example.test".into(),
+            1 => changed.provider = "gmail".into(),
+            2 => changed.imap_host = "new.example.test".into(),
+            _ => changed.imap_port = 9993,
+        }
+        assert!(rt
+            .block_on(app.clone().save_account_with_proxy(
+                changed,
+                "new-password".into(),
+                AccountProxySettings::default()
+            ))
+            .is_err());
+        assert_eq!(engine.account(&old.id).unwrap().address, old.address);
+        assert_eq!(
+            platform.read_secret(key.clone()).unwrap().unwrap(),
+            "old-password"
+        );
+    }
+    let mut ordinary = old.clone();
+    ordinary.name = "Renamed".into();
+    rt.block_on(app.save_account_with_proxy(
+        ordinary,
+        String::new(),
+        AccountProxySettings {
+            mode: AccountProxyMode::Direct,
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+    assert_eq!(engine.account(&old.id).unwrap().name, "Renamed");
+}
+
+#[test]
+fn offline_service_refuses_real_accounts_login_and_credentials_and_never_launches_workers() {
+    let (_dir, engine, _, platform, _) = fixture();
+    let account = real_account("blocked-network", "gmail", "oauth");
+    engine.save_account(account.clone()).unwrap();
+    let offline = MailApplication::new_offline(
+        engine.clone(),
+        platform.clone(),
+        Arc::new(Events::default()),
+    );
+    let rt = crate::platform::runtime();
+    offline.clone().start().unwrap();
+    offline.set_automatic_receiving(true).unwrap();
+    assert_eq!(offline.worker_count(), 0);
+    engine
+        .set_account_proxy(
+            &account.id,
+            AccountProxySettings {
+                mode: AccountProxyMode::Direct,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(offline
+        .account_platform(&account.id)
+        .unwrap()
+        .proxy_for("example.test".into())
+        .is_err());
+    assert!(offline
+        .begin_google_login(
+            account.clone(),
+            "synthetic-client".into(),
+            AccountProxySettings::default()
+        )
+        .is_err());
+    assert!(rt.block_on(offline.credential(&account.id)).is_err());
+    assert!(rt
+        .block_on(offline.save_account_with_proxy(
+            account,
+            "must-not-write".into(),
+            AccountProxySettings::default()
+        ))
+        .is_err());
+    assert!(platform.secrets.lock().unwrap().is_empty());
+}
+
+#[test]
+fn cancelling_google_finish_closes_the_listener_without_writing_a_grant() {
+    crate::platform::runtime().block_on(async {
+        let (_dir, engine, app, platform, _) = fixture();
+        let account = real_account("cancel-google", "gmail", "oauth");
+        engine.save_account(account.clone()).unwrap();
+        let key = format!("account:{}", account.id);
+        platform
+            .write_secret(key.clone(), "old-grant".into())
+            .unwrap();
+        let login = app
+            .begin_google_login(
+                account,
+                "synthetic-client".into(),
+                AccountProxySettings::default(),
+            )
+            .unwrap();
+        let parsed = url::Url::parse(&login.authorization_url()).unwrap();
+        let callback = parsed
+            .query_pairs()
+            .find(|(k, _)| k == "redirect_uri")
+            .unwrap()
+            .1
+            .into_owned();
+        let port = url::Url::parse(&callback).unwrap().port().unwrap();
+        let job = tokio::spawn(app.finish_google_login(
+            login,
+            String::new(),
+            AccountProxySettings::default(),
+        ));
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        job.abort();
+        assert!(job.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err());
+        assert_eq!(platform.read_secret(key).unwrap().unwrap(), "old-grant");
+    });
+}
+
+#[test]
+fn refreshed_google_grants_use_their_own_clients_and_preserve_them() {
+    crate::platform::runtime().block_on(async {
+        let (_dir, engine, mut app, platform, _) = fixture();
+        let server = OAuthFixture::new("unused", false);
+        Arc::get_mut(&mut app).unwrap().oauth_endpoints = server.endpoints();
+        engine.set_setting("google-client-id".into(), "unrelated-global".into()).unwrap();
+        platform.write_secret("google-client-secret".into(), "unrelated-secret".into()).unwrap();
+        for index in 0..2 {
+            let account = real_account(&format!("client-{index}"), "gmail", "oauth"); engine.save_account(account.clone()).unwrap();
+            let token = serde_json::json!({"accessToken":"expired", "refreshToken":"synthetic-refresh", "expiresAt":0, "client":{"clientId":format!("app-{index}"),"clientSecret":format!("secret-{index}")}}).to_string();
+            platform.write_secret(format!("account:{}",account.id),token).unwrap();
+            assert_eq!(app.credential(&account.id).await.unwrap(),"synthetic-access");
+            let stored: crate::auth::GoogleTokens = serde_json::from_str(&platform.read_secret(format!("account:{}",account.id)).unwrap().unwrap()).unwrap();
+            assert_eq!(stored.client.unwrap().client_id,format!("app-{index}"));
+        }
+        let observed = server.requests.lock().unwrap();
+        for (index,(_,body)) in observed.iter().enumerate() {
+            let fields: HashMap<_,_> = url::form_urlencoded::parse(body.as_bytes()).into_owned().collect();
+            assert_eq!(fields["client_id"],format!("app-{index}"));assert_eq!(fields["client_secret"],format!("secret-{index}"));
+        }
+    });
 }
 fn put_folder(engine: &MailEngine, account: &str, path: &str, role: &str) {
     let f = Folder {
