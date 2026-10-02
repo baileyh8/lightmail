@@ -101,6 +101,7 @@ pub struct MailDesktop {
     pub oauth: bool,
     pub enabled: bool,
     pub append_sent: bool,
+    pub proxy_mode: AccountProxyMode,
     pub removal: bool,
     pub configuration: Option<TranslationConfiguration>,
     pub configurations: Vec<TranslationConfiguration>,
@@ -191,6 +192,8 @@ impl MailDesktop {
             ("smtp_port", "465"),
             ("client_id", "Google Desktop Client ID"),
             ("client_secret", "Client Secret（如提供）"),
+            ("proxy_host", "127.0.0.1（不含协议或端口）"),
+            ("proxy_port", "7897"),
             ("translation_name", "翻译配置名称"),
             ("base_url", "https://api.openai.com/v1"),
             ("model", "Model"),
@@ -292,6 +295,7 @@ impl MailDesktop {
             oauth: true,
             enabled: true,
             append_sent: false,
+            proxy_mode: AccountProxyMode::System,
             removal: false,
             configuration: None,
             configurations: vec![],
@@ -607,7 +611,8 @@ impl MailDesktop {
         self.translation = None;
         self.mode = ExportMode::Original;
         self.images = false;
-        self.remote_images.reset();
+        self.remote_images
+            .reset_for_account(self.service.account_platform(&message.account_id).ok());
         self.reader_scroll.set_offset(Point::default());
         self.loading = true;
         self.reader_dirty = true;
@@ -879,6 +884,38 @@ impl MailDesktop {
         self.removal = false;
         self.editing = id.and_then(|id| self.accounts.iter().find(|a| a.id == id).cloned());
         let a = self.editing.clone();
+        let proxy = a
+            .as_ref()
+            .map(|a| self.engine.account_proxy(&a.id))
+            .transpose();
+        let proxy = match proxy {
+            Ok(proxy) => proxy.unwrap_or_default(),
+            Err(error) => {
+                self.status = error.to_string();
+                AccountProxySettings::default()
+            }
+        };
+        self.proxy_mode = proxy.mode;
+        self.set(
+            "proxy_host",
+            if proxy.host.is_empty() {
+                "127.0.0.1".into()
+            } else {
+                proxy.host
+            },
+            window,
+            cx,
+        );
+        self.set(
+            "proxy_port",
+            if proxy.port == 0 {
+                "7897".into()
+            } else {
+                proxy.port.to_string()
+            },
+            window,
+            cx,
+        );
         self.provider = a
             .as_ref()
             .map(|a| a.provider.clone())
@@ -937,6 +974,35 @@ impl MailDesktop {
         cx.notify();
     }
     pub fn save_account(&mut self, login: bool, cx: &mut Context<Self>) {
+        let port = if matches!(
+            self.proxy_mode,
+            AccountProxyMode::Http | AccountProxyMode::Socks5
+        ) {
+            match self.value("proxy_port", cx).trim().parse::<u16>() {
+                Ok(port) => port,
+                Err(_) => {
+                    self.status = "代理端口应为 1–65535".into();
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            0
+        };
+        let proxy = match (AccountProxySettings {
+            mode: self.proxy_mode,
+            host: self.value("proxy_host", cx),
+            port,
+        })
+        .validated()
+        {
+            Ok(proxy) => proxy,
+            Err(error) => {
+                self.status = error.to_string();
+                cx.notify();
+                return;
+            }
+        };
         let imap = self.value("imap_port", cx).parse();
         let smtp = self.value("smtp_port", cx).parse();
         let (Ok(imap_port), Ok(smtp_port)) = (imap, smtp) else {
@@ -988,15 +1054,26 @@ impl MailDesktop {
                     platform.write_secret("google-client-secret".into(), client_secret.clone())?;
                 }
                 if login && account.auth_kind == "oauth" {
-                    let auth = GoogleLogin::new(account.clone(), client_id, platform.clone())?;
+                    let account_platform = proxy.clone().scoped_platform(platform.clone())?;
+                    let auth = GoogleLogin::new(account.clone(), client_id, account_platform)?;
                     let url = auth.authorization_url();
+                    #[cfg(windows)]
+                    let _browser = if proxy.mode == AccountProxyMode::System {
+                        cx.update(|cx| cx.open_url(&url));
+                        None
+                    } else {
+                        Some(crate::oauth_browser::open(&url, &proxy)?)
+                    };
+                    #[cfg(not(windows))]
                     cx.update(|cx| cx.open_url(&url));
                     let secret = platform
                         .read_secret("google-client-secret".into())?
                         .unwrap_or_default();
                     auth.finish(secret).await?;
                 }
-                service.save_account(account.clone(), password).await
+                service
+                    .save_account_with_proxy(account.clone(), password, proxy)
+                    .await
             }
             .await;
             let _ = this.update(cx, |s, cx| {
@@ -1008,6 +1085,8 @@ impl MailDesktop {
                         s.body_task = None;
                         s.selected = None;
                         s.body = None;
+                        s.images = false;
+                        s.remote_images.reset_for_account(None);
                         s.reader_dirty = true;
                         cx.activate(true);
                         s.page = Page::Mail;
@@ -1465,7 +1544,19 @@ impl MailDesktop {
             Ok(lightmail_core::ReaderContent::Html(html)) if !self.plain_reading => {
                 let generation = self.blitz_generation;
                 let allow_images = self.images;
-                let platform = self.platform.clone();
+                let platform = match self
+                    .selected
+                    .as_ref()
+                    .map(|m| self.service.account_platform(&m.account_id))
+                    .transpose()
+                {
+                    Ok(Some(platform)) => platform,
+                    Ok(None) => self.platform.clone(),
+                    Err(error) => {
+                        self.reader_error = Some(error.to_string());
+                        return;
+                    }
+                };
                 let mut fallback =
                     reader_content(body, self.translation.as_ref(), self.mode, false)
                         .ok()

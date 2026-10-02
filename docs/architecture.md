@@ -78,7 +78,7 @@ macOS 关闭窗口后进程可继续同步；`⌘Q` 完全退出后不收信。�
 
 ## Windows 平台边界
 
-Windows 客户端统一经 `gpui-kit =0.7.0` 使用 GPUI 与组件库。`desktop/src/app.rs` 把交互转换成共享命令；账号、文件夹、草稿和邮件列表在后台线程读取，只采用最新一次读取的结果。`events.rs` 合并唤醒，避免通知无限排队。`platform.rs` 只访问 Credential Manager 和固定系统代理；超过单条凭据上限的值分片保存。
+Windows 客户端统一经 `gpui-kit =0.7.0` 使用 GPUI 与组件库。`desktop/src/app.rs` 把交互转换成共享命令；账号、文件夹、草稿和邮件列表在后台线程读取，只采用最新一次读取的结果。`events.rs` 合并唤醒，避免通知无限排队。`platform.rs` 访问 Credential Manager 和固定系统代理；超过单条凭据上限的值分片保存。单个邮箱的代理策略、验证、持久化和请求路由由 `core/account_proxy.rs` 管理，传输层连接时查询；Windows 表单提供系统、直连、HTTP、SOCKS5 选择。`oauth_browser.rs` 仅负责按该邮箱配置启动和清理独立授权浏览器，本机回调直连，详见 [账号代理](windows-account-proxy.md)。
 
 `tray.rs` 管理 Windows 托盘、窗口图标、恢复已有实例与退出生命周期。关闭窗口隐藏到托盘；退出时保存草稿并停止服务。托盘立即收信调用 `MailApplication::refresh`；自动收信开关调用 Rust-only 的 `set_automatic_receiving`，只停后台监控/预加载，不取消手动命令和发送队列。Windows 偏好存于 `windows-automatic-receiving`，Mac 调用与默认行为不变。
 
@@ -86,7 +86,7 @@ Windows 客户端统一经 `gpui-kit =0.7.0` 使用 GPUI 与组件库。`desktop
 
 Windows 原文 HTML 的第一版实验接入 `blitz-dom` / `blitz-html` / `blitz-paint`，GPUI 继续负责窗口和滚动宿主；Blitz shell、Winit 和 WebView 都不进入客户端。图片权限通过核心 `fetch_resource` 进入 Blitz `NetProvider`，默认阻止，用户点击「显示外部图片」后才允许当前正文的网页资源。当前绘制结果仍是有界整封图片，选区、链接命中和后台渲染属于后续阶段。
 
-阅读器不嵌入浏览器。`reader.rs` 用 Kit 的 TextView 渲染核心准备的 Markdown 或受限 HTML（`reader_content`），没有脚本引擎。图片默认显示占位图、不发请求；用户对当前邮件允许后，`images.rs` 通过核心下载（系统代理、同源重定向），单张 8 MiB、每封 32 MiB、最多 64 张，只解码 PNG、JPEG、GIF、WebP 和 BMP，切换邮件即重置。链接只把 http、https 和 mailto 交给系统打开。两端正文、安全策略与导出调用共享 `presentation.rs` / `composition.rs`。
+阅读器使用 Blitz 绘制原文 HTML/CSS 的有界视口区域，Kit TextView 承载 Markdown、译文及双语文本；没有脚本引擎。图片默认禁止请求，用户对当前邮件允许后，通过核心与该邮箱的代理范围下载，保持同源重定向及数量、压缩缓存、解码像素预算；切换邮件或保存账号淘汰旧请求与结果。详见 [原生阅读器](windows-blitz-viewport-accessibility.md)。正文 http、https 和 mailto 链接经二次确认后交给系统应用，支持复制完整网址，见 [链接确认](windows-mail-link-confirmation.md)。两端正文、安全策略与导出调用共享 `presentation.rs` / `composition.rs`。
 
 窗口没有系统标题栏。`window_chrome.rs` 自绘最小化、最大化和关闭；按钮区域向 Windows 返回原生命中测试结果，保留贴靠布局和系统菜单。侧栏 Logo、列表标题、阅读工具栏空白处，以及设置和写信弹窗外的遮罩可拖动窗口。
 

@@ -34,7 +34,8 @@ struct State {
 
 pub struct RemoteImages {
     state: Mutex<State>,
-    queue: mpsc::SyncSender<(u64, String)>,
+    platform: Mutex<Option<Arc<dyn PlatformServices>>>,
+    queue: mpsc::SyncSender<(u64, String, Arc<dyn PlatformServices>)>,
 }
 
 fn data_url(text: &str) -> Option<(ImageFormat, Vec<u8>)> {
@@ -55,16 +56,25 @@ impl RemoteImages {
         platform: Arc<dyn PlatformServices>,
         ready: impl Fn() + Send + 'static,
     ) -> Arc<Self> {
-        let (queue, jobs) = mpsc::sync_channel::<(u64, String)>(MESSAGE_IMAGES);
+        let (queue, jobs) =
+            mpsc::sync_channel::<(u64, String, Arc<dyn PlatformServices>)>(MESSAGE_IMAGES);
         let images = Arc::new(Self {
             state: Mutex::new(State::default()),
+            platform: Mutex::new(Some(platform)),
             queue,
         });
         let weak = Arc::downgrade(&images);
         std::thread::Builder::new()
             .name("reader-images".into())
             .spawn(move || {
-                for (generation, url) in jobs {
+                for (generation, url, platform) in jobs {
+                    let Some(current) = weak.upgrade() else {
+                        break;
+                    };
+                    if current.state.lock().unwrap().generation != generation {
+                        continue;
+                    }
+                    drop(current);
                     let fetched =
                         lightmail_core::fetch_resource(platform.clone(), url.clone(), IMAGE_BYTES)
                             .ok()
@@ -95,6 +105,16 @@ impl RemoteImages {
     /// Forgets every image of the previous message, including pending fetches.
     pub fn reset(&self) {
         let mut state = self.state.lock().unwrap();
+        *state = State {
+            generation: state.generation + 1,
+            ..State::default()
+        };
+    }
+
+    /// Bind the current message to its account's route. Invalid policies deny downloads.
+    pub fn reset_for_account(&self, platform: Option<Arc<dyn PlatformServices>>) {
+        let mut state = self.state.lock().unwrap();
+        *self.platform.lock().unwrap() = platform;
         *state = State {
             generation: state.generation + 1,
             ..State::default()
@@ -140,7 +160,16 @@ impl RemoteImages {
         }
         let generation = state.generation;
         let queued = state.requested < MESSAGE_IMAGES
-            && self.queue.try_send((generation, text.to_string())).is_ok();
+            && self
+                .platform
+                .lock()
+                .unwrap()
+                .clone()
+                .is_some_and(|platform| {
+                    self.queue
+                        .try_send((generation, text.to_string(), platform))
+                        .is_ok()
+                });
         state.requested += 1;
         state.slots.insert(
             text.to_string(),

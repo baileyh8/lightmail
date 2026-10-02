@@ -10,6 +10,8 @@ mod events;
 mod image_types;
 mod images;
 mod instance;
+#[cfg(windows)]
+mod oauth_browser;
 mod platform;
 mod reader;
 mod shortcuts;

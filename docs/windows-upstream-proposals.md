@@ -64,11 +64,11 @@ pub enum MailError {
 
 建议：`Problem` 只表示失败；成功结果放进 `SyncFinished` 的 `message`，或新增 `Recovered`。两端事件处理里清除账号错误的逻辑要跟着改：Windows 在 `desktop/src/app.rs` 的 `consume`，Mac 在 `MailStore` 的事件分发。
 
-## 5. 代理路由改为连接时查询（#17，观察项）
+## 5. 代理路由改为连接时查询（#17，已在后续 Windows 分支实现）
 
 `credential()` 每次取凭证时查询 IMAP、SMTP 主机的代理，写进引擎全局的 `Routes`（`core/application.rs:728-732`，`core/store.rs:290`）；建立连接时再读这张表（`core/transport.rs:138`、`1123`）。系统代理改了之后，要等下一次取凭证才会生效，而且代理状态放在了引擎里。
 
-建议由传输层在建立连接时向 `PlatformServices::proxy_for` 查询，去掉引擎里的路由缓存。目前没有发现实际故障，可以放在类型化错误之后。
+后续 `feat/windows-account-proxy` 已改为由传输层建立连接时读取账号配置，系统模式向 `PlatformServices::proxy_for` 查询；不再在 `credential()` 中更新全局主机路由。IMAP 复用键包含实际路由。Windows 新增单邮箱代理界面；配置类型及保存入口尚为 Rust-only，Mac 系统模式行为保留，查询改在连接时进行。详见 [账号代理实现与验证](windows-account-proxy.md)。上段保留为原问题记录。
 
 ## 6. 同步结束时的重复清理（#18，低优先级）
 

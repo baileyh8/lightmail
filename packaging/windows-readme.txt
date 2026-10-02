@@ -28,4 +28,8 @@ Gmail: configure your Google OAuth Desktop client, then sign in in your browser.
 QQ / 163: enable IMAP/SMTP in webmail; use the generated client authorization code.
 Translation: configure an OpenAI Chat Completions compatible service.
 Apple system translation is only available in the native macOS app.
-Fixed system HTTP/SOCKS proxies are supported; PAC is not yet supported.
+Each account can follow the system proxy, connect directly, or use its own
+HTTP/SOCKS5 host and port. Anonymous fixed proxies are supported; PAC and
+proxy authentication are not supported. Mail and Google token requests follow
+that account's setting. Direct/custom Google sign-in uses a separate Edge/Chrome
+window with temporary data; local OAuth callbacks always stay direct.

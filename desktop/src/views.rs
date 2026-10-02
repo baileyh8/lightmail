@@ -1387,6 +1387,63 @@ impl MailDesktop {
                 .child(providers)
                 .child(self.field("name", "显示名称"))
                 .child(self.field("address", "邮箱地址"));
+            let mut routes = row().gap_2();
+            for (label, id, mode) in [
+                ("跟随系统", "account-proxy-system", AccountProxyMode::System),
+                (
+                    "不使用代理",
+                    "account-proxy-direct",
+                    AccountProxyMode::Direct,
+                ),
+                ("HTTP 代理", "account-proxy-http", AccountProxyMode::Http),
+                (
+                    "SOCKS5 代理",
+                    "account-proxy-socks5",
+                    AccountProxyMode::Socks5,
+                ),
+            ] {
+                routes = routes.child(probe(
+                    id,
+                    Button::new(id)
+                        .label(label)
+                        .selected(self.proxy_mode == mode)
+                        .disabled(self.busy)
+                        .on_click(cx.listener(move |s, _, _, cx| {
+                            s.proxy_mode = mode;
+                            cx.notify();
+                        })),
+                    cx,
+                ));
+            }
+            let manual_proxy = matches!(
+                self.proxy_mode,
+                AccountProxyMode::Http | AccountProxyMode::Socks5
+            );
+            form = form.child(
+                column()
+                    .gap_2()
+                    .child(muted("此邮箱的连接代理"))
+                    .child(routes)
+                    .when(manual_proxy, |col| {
+                        col.child(
+                            row()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(self.field("proxy_host", "代理主机")),
+                                )
+                                .child(div().w(px(120.)).child(self.field("proxy_port", "端口"))),
+                        )
+                    })
+                    .child(
+                        muted("适用于此邮箱的收发、附件、外部图片和 Google 授权；本机回调直连。")
+                            .text_xs(),
+                    ),
+            );
+            if self.oauth && self.proxy_mode != AccountProxyMode::System {
+                form = form.child(muted("Google 登录使用独立的 Edge/Chrome 窗口，并遵循此邮箱的代理设置；授权结束后关闭。").text_xs());
+            }
             if self.provider == "gmail" {
                 form = form.child(
                     row()

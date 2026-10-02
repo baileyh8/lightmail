@@ -503,6 +503,122 @@ async fn reader_selection(
 
 const READER_TEST_URL: &str = "https://example.com/synthetic-link?t=a%2Bb%3D&next=%2Fdocs#section";
 
+async fn save_account_proxy_form(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    mode: lightmail_core::AccountProxyMode,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    handle.update(cx, |_, _, cx| {
+        view.update(cx, |s, cx| s.save_account(false, cx))
+    })?;
+    for _ in 0..80 {
+        pause(cx).await;
+        if handle.update(cx, |_, _, cx| {
+            let s = view.read(cx);
+            !s.busy
+                && s.engine
+                    .account_proxy("demo-work")
+                    .is_ok_and(|p| p.mode == mode)
+        })? {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("Account proxy save did not complete")
+}
+
+async fn account_proxy_form(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    path: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    use lightmail_core::AccountProxyMode;
+    let original_reader = handle.update(cx, |_, _, cx| {
+        let s = view.read(cx);
+        (s.selected.clone(), s.body.clone())
+    })?;
+    let others = handle.update(cx, |_, _, cx| {
+        let s = view.read(cx);
+        s.accounts
+            .iter()
+            .filter(|a| a.id != "demo-work")
+            .map(|a| {
+                Ok::<_, lightmail_core::MailError>((a.id.clone(), s.engine.account_proxy(&a.id)?))
+            })
+            .collect::<lightmail_core::Result<Vec<_>>>()
+    })??;
+    click(view, handle, "account-proxy-http", false, cx)?;
+    pause(cx).await;
+    handle.update(cx, |_, window, cx| {
+        view.update(cx, |s, cx| {
+            anyhow::ensure!(
+                s.proxy_mode == AccountProxyMode::Http,
+                "HTTP proxy control did not select"
+            );
+            s.set("proxy_host", "127.0.0.1", window, cx);
+            s.set("proxy_port", "7897", window, cx);
+            Ok::<_, anyhow::Error>(())
+        })
+    })??;
+    screenshot(path, "windows-account-proxy-http", cx).await?;
+    save_account_proxy_form(view, handle, AccountProxyMode::Http, cx).await?;
+    handle.update(cx, |_, window, cx| {
+        view.update(cx, |s, cx| {
+            s.open_accounts(Some("demo-work".into()), window, cx)
+        })
+    })?;
+    pause(cx).await;
+    handle.update(cx, |_, _, cx| {
+        let s = view.read(cx);
+        anyhow::ensure!(
+            s.proxy_mode == AccountProxyMode::Http
+                && s.value("proxy_host", cx) == "127.0.0.1"
+                && s.value("proxy_port", cx) == "7897",
+            "Reopened account did not restore its proxy fields"
+        );
+        Ok::<_, anyhow::Error>(())
+    })??;
+    click(view, handle, "account-proxy-direct", false, cx)?;
+    pause(cx).await;
+    save_account_proxy_form(view, handle, AccountProxyMode::Direct, cx).await?;
+    handle.update(cx, |_, window, cx| {
+        view.update(cx, |s, cx| {
+            s.open_accounts(Some("demo-work".into()), window, cx)
+        })
+    })?;
+    pause(cx).await;
+    click(view, handle, "account-proxy-socks5", false, cx)?;
+    pause(cx).await;
+    handle.update(cx, |_, _, cx| {
+        anyhow::ensure!(
+            view.read(cx).proxy_mode == AccountProxyMode::Socks5,
+            "SOCKS5 proxy control did not select"
+        );
+        for (id, policy) in &others {
+            anyhow::ensure!(
+                view.read(cx).engine.account_proxy(id)? == *policy,
+                "Saving one account changed another proxy"
+            );
+        }
+        Ok::<_, anyhow::Error>(())
+    })??;
+    click(view, handle, "account-proxy-system", false, cx)?;
+    pause(cx).await;
+    save_account_proxy_form(view, handle, AccountProxyMode::System, cx).await?;
+    handle.update(cx, |_, window, cx| {
+        view.update(cx, |s, cx| {
+            s.open_accounts(Some("demo-work".into()), window, cx);
+            s.selected = original_reader.0;
+            s.body = original_reader.1;
+            s.reader_dirty = true;
+            cx.notify();
+        })
+    })?;
+    pause(cx).await;
+    Ok(())
+}
+
 fn reader_link_opens(s: &MailDesktop) -> usize {
     s.actions
         .iter()
@@ -1144,6 +1260,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             click(&view,handle,"settings-demo-work",true,cx)?;pause(cx).await;
             handle.update(cx,|_,_,cx|{anyhow::ensure!(view.read(cx).editing.as_ref().is_some_and(|a|a.id=="demo-work"),"Account whitespace click failed");Ok::<_,anyhow::Error>(())})??;
             screenshot(&path,"windows-settings",cx).await?;
+            account_proxy_form(&view,handle,&path,cx).await?;
             click(&view,handle,"translation-tab",false,cx)?;pause(cx).await;
             handle.update(cx,|_,_,cx|{anyhow::ensure!(view.read(cx).page==Page::Translation,"Translation page inaccessible");Ok::<_,anyhow::Error>(())})??;
             click(&view,handle,"storage-tab",false,cx)?;pause(cx).await;
@@ -1161,7 +1278,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Opt-in long run for the memory curve; synthetic demo mail only.
             let reads=std::env::var("LIGHTMAIL_SOAK_READS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0);
             if reads>0 {soak(&view,handle,&path,reads,cx).await?;}
-            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","reader-link-confirm-cancel","reader-link-escape-cancel","reader-link-confirm-once","reader-link-original-url","reader-link-copy","reader-link-long-url-copy","reader-text-link-confirmation","reader-bounded-long-document","reader-keyboard-home-end","reader-cross-region-copy","reader-uia-text-pattern","reader-uia-selected-range","reader-uia-selection-action","reader-native-dpi-transition","reader-native-page-down","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
+            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","reader-link-confirm-cancel","reader-link-escape-cancel","reader-link-confirm-once","reader-link-original-url","reader-link-copy","reader-link-long-url-copy","reader-text-link-confirmation","reader-bounded-long-document","reader-keyboard-home-end","reader-cross-region-copy","reader-uia-text-pattern","reader-uia-selected-range","reader-uia-selection-action","reader-native-dpi-transition","reader-native-page-down","remote-image-policy","image-opt-in","clipboard","account-whitespace","account-proxy-mode-controls","account-proxy-persistence","account-proxy-independent-accounts","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
         }.await;
         let report=match result{Ok(v)=>v,Err(e)=>serde_json::json!({"passed":false,"error":format!("{e:#}")})};
         let _=std::fs::create_dir_all(&path);let _=std::fs::write(path.join("native-acceptance.json"),report.to_string());
