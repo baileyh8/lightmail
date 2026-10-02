@@ -1,5 +1,7 @@
 # Windows 单个邮箱的代理配置
 
+后续整改：新 Google 授权的客户端配置按账号随凭据保存，不提前覆盖全局配置；示例模式完全离线，已有邮箱身份不可替换，授权可取消。见 [整改与验证](windows-review-fixes-20261003.md)。
+
 日期：2026-10-02；分支 `feat/windows-account-proxy`。保留 GPUI Kit + Blitz 主界面，无 WebView；凭证继续使用 Windows Credential Manager。
 
 ## 使用方式

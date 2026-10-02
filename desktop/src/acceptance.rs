@@ -577,6 +577,14 @@ async fn account_proxy_form(
                 && s.value("proxy_port", cx) == "7897",
             "Reopened account did not restore its proxy fields"
         );
+        anyhow::ensure!(
+            s.platform.proxy_for("example.test".into()).is_err()
+                && s.service
+                    .account_platform("demo-work")?
+                    .proxy_for("example.test".into())
+                    .is_err(),
+            "Preview proxy bypassed its offline policy"
+        );
         Ok::<_, anyhow::Error>(())
     })??;
     click(view, handle, "account-proxy-direct", false, cx)?;

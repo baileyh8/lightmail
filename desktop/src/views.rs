@@ -1251,7 +1251,17 @@ impl MailDesktop {
             .child(muted(label.to_string()))
             .child(match self.areas.get(key) {
                 Some(area) => Textarea::new(area).into_any_element(),
-                None => line_input(Input::new(&self.fields[key]), 30.).into_any_element(),
+                None => line_input(
+                    Input::new(&self.fields[key])
+                        .disabled(self.page == Page::Accounts && self.busy)
+                        .readonly(
+                            self.page == Page::Accounts
+                                && self.editing.is_some()
+                                && ["address", "imap", "imap_port"].contains(&key),
+                        ),
+                    30.,
+                )
+                .into_any_element(),
             })
     }
     fn settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1308,6 +1318,7 @@ impl MailDesktop {
                         .on_click(cx.listener(|s, _, _, cx| {
                             s.page = Page::Mail;
                             s.record("settings-close");
+                            s.cancel_account_login(cx);
                             cx.notify();
                         })),
                     cx,
@@ -1380,6 +1391,7 @@ impl MailDesktop {
                     Button::new(label)
                         .label(label)
                         .when(self.provider == p, |b| b.primary())
+                        .disabled(self.busy || self.editing.is_some())
                         .on_click(cx.listener(move |s, _, w, cx| s.apply_preset(p.into(), w, cx))),
                 );
             }
@@ -1387,6 +1399,9 @@ impl MailDesktop {
                 .child(providers)
                 .child(self.field("name", "显示名称"))
                 .child(self.field("address", "邮箱地址"));
+            if self.editing.is_some() {
+                form = form.child(muted("邮箱身份和收件服务器固定；连接另一个邮箱请添加新账号，原邮件和草稿会保留。").text_xs());
+            }
             let mut routes = row().gap_2();
             for (label, id, mode) in [
                 ("跟随系统", "account-proxy-system", AccountProxyMode::System),
@@ -1450,6 +1465,7 @@ impl MailDesktop {
                         .child(
                             Button::new("oauth-mode")
                                 .label("Google 登录")
+                                .disabled(self.busy)
                                 .selected(self.oauth)
                                 .on_click(cx.listener(|s, _, window, cx| {
                                     // A password typed for app-password sign-in must not
@@ -1464,6 +1480,7 @@ impl MailDesktop {
                         .child(
                             Button::new("password-mode")
                                 .label("应用专用密码")
+                                .disabled(self.busy)
                                 .selected(!self.oauth)
                                 .on_click(cx.listener(|s, _, _, cx| {
                                     s.oauth = false;
@@ -1545,6 +1562,17 @@ impl MailDesktop {
                             )
                         }),
                 );
+            if self.busy {
+                form = form.child(
+                    Button::new("cancel-account-login")
+                        .label("取消邮箱接入")
+                        .on_click(cx.listener(|s, _, _, cx| s.cancel_account_login(cx))),
+                );
+            }
+            if self.demo {
+                form = form
+                    .child(muted("示例设置仅在本地生效；添加真实邮箱请先返回真实模式。").text_xs());
+            }
             if self.editing.is_some() {
                 form = form.child(div().h(px(1.)).bg(rgb(LINE))).child(muted(
                     "移除会清除此设备上的邮箱、缓存、本地草稿和凭证。服务器邮件不会删除。",
@@ -1999,6 +2027,7 @@ impl Render for MailDesktop {
             .on_action(cx.listener(|s, _: &Settings, w, cx| s.open_accounts(None, w, cx)))
             .on_action(cx.listener(|s, _: &ImportMail, _, cx| s.import_mail(cx)))
             .on_action(cx.listener(|s, _: &ClosePanel, _, cx| {
+                s.cancel_account_login(cx);
                 s.persist_compose(cx);
                 s.page = Page::Mail;
                 s.focus_reading = false;

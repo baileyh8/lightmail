@@ -242,17 +242,7 @@ fn valid_image(mime: &str, bytes: &[u8]) -> bool {
     image_pixels(mime, bytes).is_some()
 }
 fn image_pixels(mime: &str, bytes: &[u8]) -> Option<u64> {
-    if crate::image_types::raster(mime, bytes).is_none() {
-        return None;
-    }
-    image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()
-        .and_then(|reader| reader.into_dimensions().ok())
-        .and_then(|(w, h)| {
-            let pixels = w as u64 * h as u64;
-            (w > 0 && h > 0 && pixels <= MAX_SURFACE_PIXELS).then_some(pixels)
-        })
+    crate::image_types::pixels(mime, bytes)
 }
 
 fn image_sources(html: &str) -> HashSet<String> {

@@ -152,6 +152,8 @@ pub struct MailDesktop {
     lists_task: Option<Task<()>>,
     lists_generation: u64,
     autosave_task: Option<Task<()>>,
+    account_task: Option<Task<()>>,
+    account_sequence: u64,
     _events_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -172,9 +174,17 @@ impl MailDesktop {
     ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        let platform = Arc::new(DesktopPlatform::default());
+        let platform = Arc::new(if demo {
+            DesktopPlatform::preview()
+        } else {
+            DesktopPlatform::default()
+        });
         let (events, receiver) = Events::new();
-        let service = MailApplication::new(engine.clone(), platform.clone(), events.clone());
+        let service = if demo {
+            MailApplication::new_offline(engine.clone(), platform.clone(), events.clone())
+        } else {
+            MailApplication::new(engine.clone(), platform.clone(), events.clone())
+        };
         let remote_images = {
             let events = events.clone();
             crate::images::RemoteImages::new(platform.clone(), move || events.image_ready())
@@ -345,6 +355,8 @@ impl MailDesktop {
             lists_task: None,
             lists_generation: 0,
             autosave_task: None,
+            account_task: None,
+            account_sequence: 0,
             _events_task: event_task,
             _subscriptions: subscriptions,
         };
@@ -872,12 +884,22 @@ impl MailDesktop {
         })
         .detach();
     }
+    pub fn cancel_account_login(&mut self, cx: &mut Context<Self>) {
+        if self.account_task.take().is_some() {
+            self.account_sequence = self.account_sequence.wrapping_add(1);
+            self.busy = false;
+            self.status = "已取消邮箱接入".into();
+            self.record("account-login-cancel");
+            cx.notify();
+        }
+    }
     pub fn open_accounts(
         &mut self,
         id: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_account_login(cx);
         self.persist_compose(cx);
         self.page = Page::Accounts;
         self.adding_account = false;
@@ -943,13 +965,12 @@ impl MailDesktop {
             self.set("imap_port", a.imap_port.to_string(), window, cx);
             self.set("smtp_port", a.smtp_port.to_string(), window, cx);
         }
+        let configuration = self
+            .service
+            .google_client_configuration(self.editing.as_ref().map(|a| a.id.as_str()));
         self.set(
             "client_id",
-            self.engine
-                .setting("google-client-id".into())
-                .ok()
-                .flatten()
-                .unwrap_or_default(),
+            configuration.map(|c| c.client_id).unwrap_or_default(),
             window,
             cx,
         );
@@ -1042,20 +1063,37 @@ impl MailDesktop {
             self.status = "请填写客户端授权码".into();
             return;
         }
+        if self.busy {
+            return;
+        }
+        if self.demo && !["demo", "local"].contains(&account.provider.as_str()) {
+            self.status = "请先切换到真实模式，再添加真实邮箱".into();
+            cx.notify();
+            return;
+        }
+        if let Err(error) = self.engine.validate_account_configuration(&account) {
+            self.status = error.to_string();
+            cx.notify();
+            return;
+        }
         let service = self.service.clone();
-        let engine = self.engine.clone();
-        let platform = self.platform.clone();
         self.busy = true;
         self.status = "正在保存账号…".into();
-        cx.spawn(async move |this, cx| {
+        self.account_sequence = self.account_sequence.wrapping_add(1);
+        let sequence = self.account_sequence;
+        self.account_task = Some(cx.spawn(async move |this, cx| {
             let result = async {
-                engine.set_setting("google-client-id".into(), client_id.clone())?;
-                if !client_secret.is_empty() {
-                    platform.write_secret("google-client-secret".into(), client_secret.clone())?;
-                }
                 if login && account.auth_kind == "oauth" {
-                    let account_platform = proxy.clone().scoped_platform(platform.clone())?;
-                    let auth = GoogleLogin::new(account.clone(), client_id, account_platform)?;
+                    let configuration = service.google_client_configuration(Some(&account.id))?;
+                    let secret = if !client_secret.is_empty() {
+                        client_secret
+                    } else if configuration.client_id == client_id {
+                        configuration.client_secret
+                    } else {
+                        String::new()
+                    };
+                    let auth =
+                        service.begin_google_login(account.clone(), client_id, proxy.clone())?;
                     let url = auth.authorization_url();
                     #[cfg(windows)]
                     let _browser = if proxy.mode == AccountProxyMode::System {
@@ -1066,10 +1104,28 @@ impl MailDesktop {
                     };
                     #[cfg(not(windows))]
                     cx.update(|cx| cx.open_url(&url));
-                    let secret = platform
-                        .read_secret("google-client-secret".into())?
-                        .unwrap_or_default();
-                    auth.finish(secret).await?;
+                    let finish = service
+                        .clone()
+                        .finish_google_login(auth, secret, proxy.clone());
+                    #[cfg(windows)]
+                    if let Some(browser) = &_browser {
+                        match futures_util::future::select(
+                            Box::pin(finish),
+                            Box::pin(browser.closed()),
+                        )
+                        .await
+                        {
+                            futures_util::future::Either::Left((result, _)) => result?,
+                            futures_util::future::Either::Right((_, _)) => {
+                                return Err(fail("授权浏览器已关闭，登录已取消"))
+                            }
+                        }
+                    } else {
+                        finish.await?;
+                    }
+                    #[cfg(not(windows))]
+                    finish.await?;
+                    return Ok(());
                 }
                 service
                     .save_account_with_proxy(account.clone(), password, proxy)
@@ -1077,6 +1133,10 @@ impl MailDesktop {
             }
             .await;
             let _ = this.update(cx, |s, cx| {
+                if s.account_sequence != sequence {
+                    return;
+                }
+                s.account_task = None;
                 s.busy = false;
                 match result {
                     Ok(()) => {
@@ -1105,8 +1165,7 @@ impl MailDesktop {
                 s.record("account-save");
                 cx.notify();
             });
-        })
-        .detach();
+        }));
         cx.notify();
     }
     pub fn remove_account(&mut self, cx: &mut Context<Self>) {
@@ -1890,6 +1949,57 @@ mod tests {
             .unwrap()
         });
         (root, window, view)
+    }
+
+    #[gpui_kit::test]
+    fn preview_rejects_real_signup_and_preserves_google_settings(cx: &mut TestAppContext) {
+        let (_root, window, view) = open(cx);
+        cx.update_window(window, |_, window, cx| {
+            view.update(cx, |s, cx| {
+                s.engine
+                    .set_setting("google-client-id".into(), "existing-client".into())
+                    .unwrap();
+                s.open_accounts(None, window, cx);
+                s.set("name", "Must not connect", window, cx);
+                s.set("address", "fixture@example.test", window, cx);
+                s.set("client_id", "replacement-client", window, cx);
+                s.set("client_secret", "synthetic-secret", window, cx);
+                s.save_account(true, cx);
+                assert!(!s.busy);
+                assert!(s.account_task.is_none());
+                assert_eq!(
+                    s.engine
+                        .setting("google-client-id".into())
+                        .unwrap()
+                        .unwrap(),
+                    "existing-client"
+                );
+                assert!(lightmail_core::PlatformServices::read_secret(
+                    s.platform.as_ref(),
+                    "google-client-secret".into()
+                )
+                .unwrap()
+                .is_none());
+                assert!(s.status.contains("真实模式"));
+            })
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn cancelling_account_task_restores_controls_and_invalidates_the_request(
+        cx: &mut TestAppContext,
+    ) {
+        let (_root, _, view) = open(cx);
+        view.update(cx, |s, cx| {
+            s.busy = true;
+            s.account_sequence = 7;
+            s.account_task = Some(cx.spawn(async move |_, _| std::future::pending::<()>().await));
+            s.cancel_account_login(cx);
+            assert!(!s.busy);
+            assert!(s.account_task.is_none());
+            assert_eq!(s.account_sequence, 8);
+        });
     }
 
     #[gpui_kit::test]

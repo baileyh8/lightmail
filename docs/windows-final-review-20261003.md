@@ -1,5 +1,7 @@
 # Windows 分支整体 Review
 
+整改状态：Windows R1–R5 已在 `fix/windows-review-blockers` 修复并验证，CID/data 图片补上受限支持，见 [整改记录](windows-review-fixes-20261003.md)。下文保留修复前的问题和复现结果。
+
 完成日期：2026-10-03。审查分支 `feat/windows-account-proxy`，代码 `7425ccf`；已重新 fetch 上游，`upstream/main` 仍为 `5ab113a`。审查核心、Windows 界面/适配器、阅读器、OAuth/代理、托盘、任务和打包；未改产品实现、Swift 或生成绑定。
 
 结论：可以保留 GPUI Kit + Blitz + Windows Credential Manager 的路线。共享 Rust 已承担同步、缓存、发件计时、代理和数据存储；主要问题集中在授权保存事务、邮箱身份边界、示例隔离及另一条图片加载路径。当前不宜标记为正式稳定版。

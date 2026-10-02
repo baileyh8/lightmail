@@ -1,11 +1,11 @@
 //! Windows-only capabilities; application policy stays in lightmail_core.
 use lightmail_core::fail;
 use lightmail_core::{PlatformServices, ProxyRoute, Result};
-#[cfg(any(not(windows), test))]
 use std::{collections::HashMap, sync::Mutex};
 
 pub struct DesktopPlatform {
     vault: Box<dyn Vault + Send + Sync>,
+    offline: bool,
 }
 
 impl Default for DesktopPlatform {
@@ -15,7 +15,18 @@ impl Default for DesktopPlatform {
         // Development previews on macOS never touch the native Swift app's vault.
         #[cfg(not(windows))]
         let vault: Box<dyn Vault + Send + Sync> = Box::new(MemoryVault::default());
-        Self { vault }
+        Self {
+            vault,
+            offline: false,
+        }
+    }
+}
+impl DesktopPlatform {
+    pub fn preview() -> Self {
+        Self {
+            vault: Box::new(MemoryVault::default()),
+            offline: true,
+        }
     }
 }
 
@@ -57,11 +68,9 @@ impl Vault for CredentialManager {
     }
 }
 
-#[cfg(any(not(windows), test))]
 #[derive(Default)]
 struct MemoryVault(Mutex<HashMap<String, String>>);
 
-#[cfg(any(not(windows), test))]
 impl Vault for MemoryVault {
     fn get(&self, key: &str) -> Result<Option<String>> {
         Ok(self.0.lock().unwrap().get(key).cloned())
@@ -216,6 +225,9 @@ impl PlatformServices for DesktopPlatform {
         remove_value(self.vault.as_ref(), &key)
     }
     fn proxy_for(&self, host: String) -> Result<ProxyRoute> {
+        if self.offline {
+            return Err(fail("示例模式禁止网络请求"));
+        }
         if matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]") {
             return Ok(direct());
         }

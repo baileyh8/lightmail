@@ -25,6 +25,14 @@ Confirm to open HTTP/HTTPS links in your default browser; Cancel or Esc
 keeps them closed. Mailto links use your default mail application after confirmation.
 
 Gmail: configure your Google OAuth Desktop client, then sign in in your browser.
+New Google grants retain their own client configuration; failed or cancelled
+sign-in does not change existing global Google settings. Choose Cancel to stop
+an active login; closing the independent direct/custom-proxy browser also cancels.
+Existing mailbox identity
+is fixed; add another account when changing mailbox or IMAP server.
+Demo mode uses memory-only credentials and blocks real mailbox/network access.
+Referenced CID raster images are fetched separately within a 2 MiB message
+budget. Embedded and remote images share decoded-pixel and animation limits.
 QQ / 163: enable IMAP/SMTP in webmail; use the generated client authorization code.
 Translation: configure an OpenAI Chat Completions compatible service.
 Apple system translation is only available in the native macOS app.

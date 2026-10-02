@@ -30,6 +30,7 @@ struct State {
     slots: HashMap<String, Slot>,
     requested: usize,
     bytes: usize,
+    pixels: u64,
 }
 
 pub struct RemoteImages {
@@ -38,7 +39,7 @@ pub struct RemoteImages {
     queue: mpsc::SyncSender<(u64, String, Arc<dyn PlatformServices>)>,
 }
 
-fn data_url(text: &str) -> Option<(ImageFormat, Vec<u8>)> {
+fn data_url(text: &str) -> Option<(ImageFormat, Vec<u8>, u64)> {
     let (header, payload) = text.strip_prefix("data:")?.split_once(',')?;
     let (mime, encoding) = header.split_once(';')?;
     if encoding != "base64" || payload.len() > IMAGE_BYTES / 3 * 4 + 4 {
@@ -47,7 +48,8 @@ fn data_url(text: &str) -> Option<(ImageFormat, Vec<u8>)> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(payload.trim())
         .ok()?;
-    Some((raster(mime, &bytes)?, bytes))
+    let pixels = crate::image_types::pixels(mime, &bytes)?;
+    Some((raster(mime, &bytes)?, bytes, pixels))
 }
 
 impl RemoteImages {
@@ -78,7 +80,13 @@ impl RemoteImages {
                     let fetched =
                         lightmail_core::fetch_resource(platform.clone(), url.clone(), IMAGE_BYTES)
                             .ok()
-                            .and_then(|(bytes, mime)| Some((raster(&mime, &bytes)?, bytes)));
+                            .and_then(|(bytes, mime)| {
+                                Some((
+                                    raster(&mime, &bytes)?,
+                                    crate::image_types::pixels(&mime, &bytes)?,
+                                    bytes,
+                                ))
+                            });
                     let Some(images) = weak.upgrade() else {
                         break;
                     };
@@ -87,8 +95,12 @@ impl RemoteImages {
                         continue;
                     }
                     let slot = match fetched {
-                        Some((format, bytes)) if state.bytes + bytes.len() <= MESSAGE_BYTES => {
+                        Some((format, pixels, bytes))
+                            if state.bytes + bytes.len() <= MESSAGE_BYTES
+                                && state.pixels + pixels <= crate::image_types::MAX_PIXELS =>
+                        {
                             state.bytes += bytes.len();
+                            state.pixels += pixels;
                             Slot::Ready(Arc::new(Image::from_bytes(format, bytes)))
                         }
                         _ => Slot::Failed,
@@ -136,9 +148,16 @@ impl RemoteImages {
             text.hash(&mut hasher);
             let key = format!("data#{:x}", hasher.finish());
             if !state.slots.contains_key(&key) {
+                if state.slots.len() >= MESSAGE_IMAGES {
+                    return placeholder();
+                }
                 let slot = match data_url(text) {
-                    Some((format, bytes)) if state.bytes + bytes.len() <= MESSAGE_BYTES => {
+                    Some((format, bytes, pixels))
+                        if state.bytes + bytes.len() <= MESSAGE_BYTES
+                            && state.pixels + pixels <= crate::image_types::MAX_PIXELS =>
+                    {
                         state.bytes += bytes.len();
+                        state.pixels += pixels;
                         Slot::Ready(Arc::new(Image::from_bytes(format, bytes)))
                     }
                     _ => Slot::Failed,
@@ -159,6 +178,9 @@ impl RemoteImages {
             None => {}
         }
         let generation = state.generation;
+        if state.slots.len() >= MESSAGE_IMAGES {
+            return placeholder();
+        }
         let queued = state.requested < MESSAGE_IMAGES
             && self
                 .platform
@@ -198,9 +220,39 @@ mod tests {
         )
         .is_none());
         assert!(raster("text/html", b"<html>").is_none());
-        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(crate::image_types::tests::png(1, 1, 0));
         assert!(data_url(&format!("data:image/png;base64,{encoded}")).is_some());
         assert!(data_url("data:image/svg+xml;base64,PHN2Zy8+").is_none());
         assert!(data_url("data:image/png,raw").is_none());
+    }
+
+    #[test]
+    fn markdown_images_reject_high_compression_dimensions_and_charge_total_pixels() {
+        let platform = Arc::new(crate::platform::DesktopPlatform::preview());
+        let images = RemoteImages::new(platform, || {});
+        let uri = |bytes: Vec<u8>| {
+            SharedUri::from(format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            ))
+        };
+        let large = crate::image_types::tests::png(6000, 4000, 0);
+        assert!(large.len() < 200_000);
+        assert!(!matches!(
+            images.resolve(&uri(large)),
+            ImageSource::Image(_)
+        ));
+        for i in 0..40 {
+            assert!(matches!(
+                images.resolve(&uri(crate::image_types::tests::png(640, 640, i))),
+                ImageSource::Image(_)
+            ));
+        }
+        assert!(!matches!(
+            images.resolve(&uri(crate::image_types::tests::png(640, 640, 42))),
+            ImageSource::Image(_)
+        ));
+        assert!(images.state.lock().unwrap().pixels <= crate::image_types::MAX_PIXELS);
     }
 }

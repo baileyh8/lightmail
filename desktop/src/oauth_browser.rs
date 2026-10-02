@@ -21,6 +21,39 @@ struct Session {
     process: OwnedHandle,
     profile: Option<tempfile::TempDir>,
 }
+impl OAuthBrowser {
+    pub async fn closed(&self) {
+        let Some(session) = &self.0 else {
+            return;
+        };
+        let Ok(job) = session.job.try_clone() else {
+            return;
+        };
+        let (reply, closed) = async_channel::bounded::<()>(1);
+        let _ = std::thread::Builder::new()
+            .name("oauth-browser-watch".into())
+            .spawn(move || {
+                while !reply.is_closed() {
+                    let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+                    let valid = unsafe {
+                        QueryInformationJobObject(
+                            job.as_raw_handle(),
+                            JobObjectBasicAccountingInformation,
+                            &mut info as *mut _ as _,
+                            std::mem::size_of_val(&info) as u32,
+                            std::ptr::null_mut(),
+                        )
+                    };
+                    if valid == 0 || info.ActiveProcesses == 0 {
+                        let _ = reply.try_send(());
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            });
+        let _ = closed.recv().await;
+    }
+}
 
 impl Drop for OAuthBrowser {
     fn drop(&mut self) {
@@ -286,6 +319,45 @@ mod tests {
             Arc,
         },
     };
+
+    #[test]
+    fn browser_close_watcher_finishes_when_the_owned_process_exits() {
+        let profile = tempfile::Builder::new()
+            .prefix("lightmail-close-fixture-")
+            .tempdir()
+            .unwrap();
+        let directory = profile.path().to_path_buf();
+        let program = PathBuf::from(std::env::var_os("WINDIR").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let browser = spawn(
+            &program,
+            &["-NoProfile".into(), "-Command".into(), "exit 0".into()],
+            profile,
+        )
+        .unwrap();
+        {
+            use std::future::Future;
+            let mut closed = Box::pin(browser.closed());
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if closed.as_mut().poll(&mut context).is_ready() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "browser close notification timed out"
+                );
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+        drop(browser);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while directory.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!directory.exists());
+    }
 
     struct LoopbackBrowserFixture {
         port: u16,
