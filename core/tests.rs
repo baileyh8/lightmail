@@ -229,7 +229,13 @@ fn local_protocol_integration() {
     assert!(started.elapsed() < std::time::Duration::from_secs(2));
     drop(sync_guard);
     assert!(body.markdown.contains("12.50"));
-    assert_eq!(body.attachments.len(), 1);
+    let inline = ports["inline_images"].as_bool().unwrap_or(false);
+    assert_eq!(body.attachments.len(), if inline { 2 } else { 1 });
+    if inline {
+        assert!(body.html.contains("data:image/png;base64,"));
+        assert!(!body.html.contains("cid:fixture-logo"));
+        assert_eq!(state()["inline_fetches"], 1);
+    }
     assert_eq!(state()["body_fetches"], 1);
     assert_eq!(state()["attachment_fetches"], 0);
     let dest = _dir.path().join("attachment.bin");
@@ -436,6 +442,9 @@ fn local_protocol_integration() {
     assert_eq!(state()["proxy_connects"].as_u64().unwrap(), after);
     println!("Validated {proxy_kind}: TLS IMAP metadata, selective MIME fetch, attachment decode, flags, IDLE, SMTP accepted/rejected/ambiguous, Bcc privacy and duplicate-send prevention.");
     println!("Validated mixed accounts: same-server direct/proxy IMAP and SMTP, sent-copy routing and proxy-to-direct reconnect.");
+    if inline {
+        println!("Validated referenced MIME CID image: selective IMAP fetch, bounded raster data URI, unreferenced attachment remains deferred");
+    }
 }
 
 #[test]

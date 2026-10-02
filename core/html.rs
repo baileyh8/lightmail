@@ -2,7 +2,75 @@ use html5ever::{local_name, ns, tendril::TendrilSink, Attribute, QualName};
 use markup5ever_rcdom::{Handle, Node, NodeData, RcDom, SerializableHandle};
 use std::{cell::RefCell, rc::Rc};
 
-pub const RENDER_MARKER: &str = "<!--lightmail-render-v3-->";
+pub const RENDER_MARKER: &str = "<!--lightmail-render-v4-->";
+
+pub(crate) fn cid_id(source: &str) -> Option<String> {
+    if !source.get(..4)?.eq_ignore_ascii_case("cid:") {
+        return None;
+    }
+    let mut result = Vec::new();
+    let mut chars = source.as_bytes()[4..].iter().copied();
+    while let Some(byte) = chars.next() {
+        if byte == b'%' {
+            let a = (chars.next()? as char).to_digit(16)?;
+            let b = (chars.next()? as char).to_digit(16)?;
+            result.push((a * 16 + b) as u8);
+        } else {
+            result.push(byte);
+        }
+    }
+    let text = String::from_utf8(result).ok()?;
+    (!text.is_empty() && !text.chars().any(char::is_control))
+        .then(|| text.trim_matches(['<', '>']).to_owned())
+}
+
+pub(crate) fn image_cids(html: &str) -> std::collections::HashSet<String> {
+    let dom = html5ever::parse_document(RcDom::default(), Default::default()).one(html);
+    let mut stack = vec![dom.document.clone()];
+    let mut ids = std::collections::HashSet::new();
+    while let Some(node) = stack.pop() {
+        if named(&node, "img") {
+            if let Some(cid) = cid_id(&attr(&node, "src")) {
+                ids.insert(cid);
+            }
+        }
+        stack.extend(node.children.borrow().iter().cloned());
+    }
+    ids
+}
+
+pub(crate) fn embed_inline_images(
+    html: &str,
+    resources: &std::collections::HashMap<String, String>,
+) -> String {
+    if resources.is_empty() {
+        return html.to_owned();
+    }
+    let dom = html5ever::parse_document(RcDom::default(), Default::default()).one(html);
+    let mut stack = vec![dom.document.clone()];
+    while let Some(node) = stack.pop() {
+        if named(&node, "img") {
+            if let NodeData::Element { attrs, .. } = &node.data {
+                for attribute in attrs
+                    .borrow_mut()
+                    .iter_mut()
+                    .filter(|a| a.name.local.as_ref() == "src")
+                {
+                    if let Some(data) = cid_id(&attribute.value).and_then(|id| resources.get(&id)) {
+                        attribute.value = data.as_str().into();
+                    }
+                }
+            }
+        }
+        stack.extend(node.children.borrow().iter().cloned());
+    }
+    let mut bytes = Vec::new();
+    let root: SerializableHandle = dom.document.into();
+    if html5ever::serialize(&mut bytes, &root, Default::default()).is_err() {
+        return html.to_owned();
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| html.to_owned())
+}
 
 // Image-only links must remain usable when remote images are blocked. Parse
 // actual HTML nodes so quoted attributes and encoded URLs stay intact.

@@ -513,6 +513,7 @@ struct Part {
     filename: String,
     size: u64,
     attachment: bool,
+    content_id: String,
 }
 fn flatten_parts(
     bs: &BodyStructure<'_>,
@@ -571,6 +572,12 @@ fn part_info(c: &BodyContentCommon<'_>, o: &BodyContentSinglePart<'_>, path: Vec
     }
     .into();
     Part {
+        content_id: o
+            .id
+            .as_deref()
+            .unwrap_or_default()
+            .trim_matches(['<', '>'])
+            .to_owned(),
         path,
         mime,
         encoding,
@@ -721,11 +728,51 @@ async fn read_body(e: &MailEngine, id: &str, c: &str, role: &str) -> Result<Mail
             }
         }
         let markdown = md.join("\n\n");
-        let html = if has_html {
+        let mut html = if has_html {
             html.join("\n")
         } else {
             String::new()
         };
+        let cids = crate::html::image_cids(&html);
+        let mut resources = HashMap::new();
+        let mut inline_bytes = 0usize;
+        for p in ps
+            .iter()
+            .filter(|p| !p.content_id.is_empty() && cids.contains(&p.content_id))
+            .take(64)
+        {
+            if ![
+                "image/png",
+                "image/jpeg",
+                "image/gif",
+                "image/webp",
+                "image/bmp",
+            ]
+            .contains(&p.mime.as_str())
+            {
+                continue;
+            }
+            let remaining = mime::INLINE_IMAGE_BYTES.saturating_sub(inline_bytes);
+            if remaining == 0 || p.size > remaining as u64 {
+                continue;
+            }
+            let raw = fetch_part(&mut s, m.uid, p, remaining as u64).await?;
+            if let Some(mail) = mail_parser::MessageParser::default().parse(&raw) {
+                if let Some(part) = mail.parts.first() {
+                    let bytes = part.contents();
+                    if bytes.len() <= remaining {
+                        if let Some(uri) = mime::inline_image_uri(&p.mime, bytes) {
+                            inline_bytes += bytes.len();
+                            resources.entry(p.content_id.clone()).or_insert(uri);
+                        }
+                    }
+                }
+            }
+        }
+        html = crate::html::embed_inline_images(&html, &resources);
+        if html.len() > 8 * 1024 * 1024 {
+            return Err(fail("包含内嵌图片的正文超过显示上限"));
+        }
         let text = mime::plain_text(&html, &markdown);
         let attachments = ps
             .iter()

@@ -12,10 +12,11 @@ from http.server import BaseHTTPRequestHandler
 from loopback_http import LoopbackThreadingHTTPServer
 from proxy_fixture import Proxy
 
-STATE = {"validity": 7, "seen": False, "body_fetches": 0, "attachment_fetches": 0,
+STATE = {"validity": 7, "seen": False, "body_fetches": 0, "attachment_fetches": 0, "inline_fetches": 0,
          "smtp_accepted": 0, "smtp_dropped": 0, "append_count": 0, "bcc_header_seen": False, "proxy_connects": 0}
 BODY = b"Hello Bailey,\r\n\r\nPlease review the attached file. Amount USD 12.50.\r\n\r\nThanks."
 ATTACHMENT = b"fixture attachment bytes"
+INLINE_IMAGE = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 HEADER = b"From: Fixture Sender <sender@example.com>\r\nTo: recipient@example.com\r\nSubject: Synthetic integration mail\r\nMessage-ID: <fixture-1@example.com>\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n"
 # QQ can represent an absent Content-Transfer-Encoding as NIL. Exercise it in
 # summary batches and selective body fetches, alongside a normal BASE64 part.
@@ -70,6 +71,12 @@ class IMAP(socketserver.StreamRequestHandler):
                     STATE["attachment_fetches"] += 1
                     encoded = base64.b64encode(ATTACHMENT)
                     self.send(f"* 1 FETCH (UID 1 BODY[2] {{{len(encoded)}}}\r\n")
+                    self.send(encoded)
+                    self.send(")\r\n")
+                elif "BODY.PEEK[3]" in upper:
+                    STATE["inline_fetches"] += 1
+                    encoded = base64.b64encode(INLINE_IMAGE)
+                    self.send(f"* 1 FETCH (UID 1 BODY[3] {{{len(encoded)}}}\r\n")
                     self.send(encoded)
                     self.send(")\r\n")
                 else:
@@ -158,7 +165,10 @@ class TLSServer(Server):
 
 
 if __name__ == "__main__":
-    p=argparse.ArgumentParser();p.add_argument("--cert",required=True);p.add_argument("--key",required=True);p.add_argument("--ports-file",required=True);args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument("--cert",required=True);p.add_argument("--key",required=True);p.add_argument("--ports-file",required=True);p.add_argument("--inline-images",action="store_true");args=p.parse_args()
+    if args.inline_images:
+        BODY = b"<p>Please review the attached file. Amount USD 12.50.</p><img src='cid:fixture-logo' alt='Fixture logo'>"
+        STRUCTURE = f'(("TEXT" "HTML" ("CHARSET" "UTF-8") NIL NIL NIL {len(BODY)} 1)("APPLICATION" "OCTET-STREAM" ("NAME" "sample.bin") NIL NIL "BASE64" {len(base64.b64encode(ATTACHMENT))} NIL ("ATTACHMENT" ("FILENAME" "sample.bin")) NIL NIL)("IMAGE" "PNG" NIL "<fixture-logo>" NIL "BASE64" {len(base64.b64encode(INLINE_IMAGE))} NIL ("INLINE" NIL) NIL NIL) "RELATED" ("BOUNDARY" "x") NIL NIL)'
     context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(args.cert,args.key)
     imap=TLSServer(("127.0.0.1",0),IMAP);imap.context=context
     smtp=Server(("127.0.0.1",0),SMTP);smtp.context=context
@@ -167,7 +177,7 @@ if __name__ == "__main__":
     for proxy in (socks,http):
         proxy.allowed_ports={imap.server_address[1],smtp.server_address[1]};proxy.state=STATE
     control=LoopbackThreadingHTTPServer(("127.0.0.1",0),Control)
-    with open(args.ports_file,"w")as f:json.dump({"imap":imap.server_address[1],"smtp":smtp.server_address[1],"control":control.server_address[1],"socks5":socks.server_address[1],"http":http.server_address[1]},f)
+    with open(args.ports_file,"w")as f:json.dump({"imap":imap.server_address[1],"smtp":smtp.server_address[1],"control":control.server_address[1],"socks5":socks.server_address[1],"http":http.server_address[1],"inline_images":args.inline_images},f)
     for server in [imap,smtp,socks,http]:threading.Thread(target=server.serve_forever,daemon=True).start()
     print("Loopback mail fixtures ready",flush=True)
     control.serve_forever()
