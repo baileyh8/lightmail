@@ -16,9 +16,12 @@ Automatic receiving (checked by default), and Exit. Manual receiving
 leaves sending and other commands available. The preference persists.
 Windows may put new tray icons inside the overflow menu near the clock.
 
-HTML mail uses the native simplified HTML reader by default. It supports
-common content formatting, not full CSS or faithful nested mail layouts.
+HTML mail uses the native Blitz HTML/CSS reader by default. It supports
+common email layouts; complete browser CSS compatibility is not promised.
 Use the reading menu to switch to clean Markdown reading when needed.
+Clicking a message link shows its target website and complete address.
+Confirm to open HTTP/HTTPS links in your default browser; Cancel or Esc
+keeps them closed. Mailto links use your default mail application after confirmation.
 
 Gmail: configure your Google OAuth Desktop client, then sign in in your browser.
 QQ / 163: enable IMAP/SMTP in webmail; use the generated client authorization code.

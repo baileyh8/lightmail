@@ -1,0 +1,32 @@
+# Windows 邮件链接二次确认
+
+日期：2026-10-02；分支 `fix/windows-mail-link-confirmation`。保持 GPUI Kit + Blitz，不引入 WebView，不修改 Mac 或共享邮箱业务。
+
+## 行为
+
+原先 HTML 阅读器与 Kit TextView 都直接打开链接。现在所有正文链接进入同一个确认入口：点击后显示目标网站和完整地址，选择「用默认浏览器打开」才调用系统打开；「取消」与 Esc 关闭确认框。拖选链接文字不会弹出确认或打开链接。
+
+- HTTP / HTTPS 使用系统默认浏览器；`mailto:` 保留系统默认邮件应用行为，并使用对应的确认文案。
+- HTML、Markdown、翻译正文及双语两栏复用同一入口；旧 Kit HTML 分支也受约束。
+- 地址框只读，支持选择与复制。目标网站取自解析后的主机名；完整地址与系统打开参数保留原字符串，不重写签名查询、转义或片段。
+- 禁止 `javascript:`、`file:`、`data:`、Windows 自定义协议及含控制字符的地址。
+- 活跃确认框期间不替换目标、不叠加弹窗；确认后消费该请求，重复或陈旧回调不会再次打开。
+- 使用 Kit AlertDialog 的模态、焦点限制和焦点恢复。针对 Kit 0.7 地址框缺失的只读辅助功能声明，在本地展示适配器补充 AccessKit 元数据。
+
+前端拥有链接确认与系统交互；没有向 Rust 邮箱核心增加导航状态或业务算法。Windows GPUI 的 `open_url` 最终调用 `ShellExecuteW("open", ...)`，由系统协议关联选择应用，未指定浏览器可执行文件。
+
+## 验证边界
+
+Windows 26 项回归、核心 56 项测试通过（核心原有 4 项忽略）。原生验收 39 项通过，另有阅读区像素检查；新增的实际窗口验证覆盖：
+
+- HTML 链接点击只弹出确认；取消按钮及原生 Esc 键消息均不打开。
+- 确认仅产生一次外部打开请求，重复回调无效；活跃弹窗不被另一个地址替换。
+- UI Automation 读取的完整 URL 与原始签名查询、片段一致，并正确声明只读。
+- Markdown、旧 Kit HTML、双语原文及译文两栏的实际链接点击都弹出同一确认框。
+- 继续验证拖选链接不触发导航、正文选择/复制、长文、DPI 和托盘等现有行为。
+
+验证报告与合成截图保存在忽略的 `build/windows-mail-link-confirmation-20261002-final/`。没有重新提取真实邮件或运行安装/卸载；没有推送。
+
+自动验收只操作隔离的示例窗口，拦截外部打开并记录确认后的调用。它验证确认门槛和传入地址，不会访问真实邮件链接、跟踪链接或第三方网页，也不证明目标网站的网络可用性。
+
+组件行为依据 [Kit AlertDialog 文档](https://github.com/longbridge/gpui-kit/blob/main/website/component/alert-dialog.md) 和 [Textarea 文档](https://github.com/longbridge/gpui-kit/blob/main/website/component/textarea.md)，具体实现按锁定的 0.7.0 源码核对。

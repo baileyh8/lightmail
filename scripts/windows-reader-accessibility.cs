@@ -15,7 +15,7 @@ class ReaderAccessibilityProbe {
     [MTAThread]
     static int Main(string[] args) {
         try {
-            if (args.Length != 1) throw new Exception("Expected the fixture process id");
+            if (args.Length < 1 || args.Length > 2) throw new Exception("Expected the fixture process id and optional probe mode");
             uint wanted = uint.Parse(args[0]);
             IntPtr handle = IntPtr.Zero;
             EnumWindows(delegate(IntPtr window, IntPtr unused) {
@@ -26,6 +26,20 @@ class ReaderAccessibilityProbe {
             }, IntPtr.Zero);
             if (handle == IntPtr.Zero) throw new Exception("Fixture window missing");
             var root = AutomationElement.FromHandle(handle);
+            if (args.Length == 2 && args[1] == "--link-dialog") {
+                var address = root.FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.AutomationIdProperty, "reader-link-address"));
+                object value;
+                if (address == null || !address.TryGetCurrentPattern(ValuePattern.Pattern, out value))
+                    throw new Exception("Confirmation URL did not expose a value pattern");
+                var pattern = (ValuePattern)value;
+                if (!pattern.Current.IsReadOnly)
+                    throw new Exception("Confirmation URL did not expose its read-only state");
+                if (pattern.Current.Value != "https://example.com/synthetic-link?t=a%2Bb%3D&next=%2Fdocs#section")
+                    throw new Exception("Confirmation URL changed signed URL bytes; fixture value=" + pattern.Current.Value);
+                Console.WriteLine("UIA link confirmation: complete original URL and read-only field verified");
+                return 0;
+            }
             var deadline = Stopwatch.StartNew();
             while (deadline.ElapsedMilliseconds < 15000) {
                 var body = root.FindFirst(TreeScope.Descendants,

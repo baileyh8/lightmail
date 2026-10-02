@@ -61,7 +61,9 @@ fn body(
     html: bool,
     images: Images,
     fill: bool,
+    cx: &Context<crate::app::MailDesktop>,
 ) -> TextView {
+    let reader = cx.entity().downgrade();
     let view = if html {
         TextView::html(id, source)
     } else {
@@ -82,11 +84,8 @@ fn body(
                 .with_paragraph_gap(rems(1.)),
         )
         .image_source(move |uri| images(uri))
-        .on_link_click(|link, _, _, cx| {
-            if allowed_link(link) {
-                // Parsing validates only; signed URLs are opened exactly as written.
-                cx.open_url(link.as_str());
-            }
+        .on_link_click(move |link, _, window, cx| {
+            let _ = reader.update(cx, |s, cx| s.request_reader_link(link.as_str(), window, cx));
         })
 }
 
@@ -109,6 +108,7 @@ pub fn view(
                 html,
                 images,
                 fill,
+                cx,
             );
             if fill {
                 div().size_full().child(view).into_any_element()
@@ -178,14 +178,14 @@ pub fn view(
                 }))
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(|s, e: &MouseUpEvent, _, cx| {
-                        s.end_reader_selection(e.position, true, cx)
+                    cx.listener(|s, e: &MouseUpEvent, window, cx| {
+                        s.end_reader_selection(e.position, true, window, cx)
                     }),
                 )
                 .on_mouse_up_out(
                     MouseButton::Left,
-                    cx.listener(|s, e: &MouseUpEvent, _, cx| {
-                        s.end_reader_selection(e.position, false, cx)
+                    cx.listener(|s, e: &MouseUpEvent, window, cx| {
+                        s.end_reader_selection(e.position, false, window, cx)
                     }),
                 )
                 .cursor(CursorStyle::IBeam)
@@ -307,6 +307,7 @@ pub fn view(
                             false,
                             images.clone(),
                             false,
+                            cx,
                         )))
                         .child(
                             div()
@@ -321,6 +322,7 @@ pub fn view(
                                     false,
                                     images.clone(),
                                     false,
+                                    cx,
                                 )),
                         ),
                 );

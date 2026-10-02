@@ -4,6 +4,7 @@ use crate::{
     platform::DesktopPlatform,
     reader::Document,
 };
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 use lightmail_core::{ExportMode, PlatformServices};
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -489,9 +490,243 @@ async fn reader_selection(
                 == opens,
             "Dragging link text activated navigation"
         );
+        anyhow::ensure!(
+            s.pending_reader_link.is_none(),
+            "Dragging link text opened confirmation"
+        );
         window.resize(original);
         Ok::<_, anyhow::Error>(())
     })??;
+    pause(cx).await;
+    Ok(())
+}
+
+const READER_TEST_URL: &str = "https://example.com/synthetic-link?t=a%2Bb%3D&next=%2Fdocs#section";
+
+fn reader_link_opens(s: &MailDesktop) -> usize {
+    s.actions
+        .iter()
+        .filter(|a| a.as_str() == "reader-link-open")
+        .count()
+}
+
+async fn click_reader_link(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    let position = handle.update(cx, |_, _, cx| {
+        let s = view.read(cx);
+        let Some(Document::Blitz(r)) = &s.reader else {
+            anyhow::bail!("HTML reader missing");
+        };
+        let link = r
+            .links
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("Mail link missing"))?;
+        Ok::<_, anyhow::Error>(point(
+            s.reader_surface.left() + px(link.x + link.width / 2.),
+            s.reader_surface.top() + px(link.y + link.height / 2.),
+        ))
+    })??;
+    for (message, buttons) in [(0x0200, 0), (0x0201, 1), (0x0202, 0)] {
+        post_reader_pointer(handle, position, message, buttons, cx)?;
+    }
+    pause(cx).await;
+    Ok(())
+}
+
+async fn reader_link_confirmation(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    path: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    let opens = handle.update(cx, |_, _, cx| reader_link_opens(view.read(cx)))?;
+    handle.update(cx, |_, window, cx| {
+        view.update(cx, |s, cx| {
+            for href in [
+                "javascript:alert(1)",
+                "file:///C:/private.txt",
+                "data:text/html,hello",
+                "ms-settings:privacy",
+            ] {
+                s.request_reader_link(href, window, cx);
+            }
+            anyhow::ensure!(
+                s.pending_reader_link.is_none() && !window.has_active_dialog(cx),
+                "Blocked protocol opened a dialog"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+    })??;
+    click_reader_link(view, handle, cx).await?;
+    handle.update(cx, |_, window, cx| {
+        view.update(cx, |s, cx| {
+            anyhow::ensure!(
+                s.pending_reader_link.as_deref() == Some(READER_TEST_URL),
+                "Confirmation changed the target URL"
+            );
+            anyhow::ensure!(
+                reader_link_opens(s) == opens && window.has_active_dialog(cx),
+                "Link opened before confirmation"
+            );
+            s.request_reader_link("https://example.test/replacement", window, cx);
+            anyhow::ensure!(
+                s.pending_reader_link.as_deref() == Some(READER_TEST_URL),
+                "Second request replaced the displayed target"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+    })??;
+    screenshot(path, "windows-reader-link-confirmation", cx).await?;
+    #[cfg(windows)]
+    {
+        let executable = std::env::var("LIGHTMAIL_A11Y_PROBE")?;
+        let result = cx
+            .background_spawn(async move {
+                use std::os::windows::process::CommandExt;
+                std::process::Command::new(executable)
+                    .args([std::process::id().to_string(), "--link-dialog".to_owned()])
+                    .creation_flags(0x08000000)
+                    .output()
+            })
+            .await?;
+        std::fs::write(path.join("reader-link-accessibility.txt"), &result.stdout)?;
+        anyhow::ensure!(
+            result.status.success(),
+            "Link confirmation UIA check failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    click(view, handle, "reader-link-cancel", false, cx)?;
+    pause(cx).await;
+    pause(cx).await;
+    handle.update(cx, |_, window, cx| {
+        let dialog = window.has_active_dialog(cx);
+        let s = view.read(cx);
+        anyhow::ensure!(
+            s.pending_reader_link.is_none() && !dialog && reader_link_opens(s) == opens,
+            "Cancel opened the link or retained a dialog"
+        );
+        Ok::<_, anyhow::Error>(())
+    })??;
+    click_reader_link(view, handle, cx).await?;
+    #[cfg(windows)]
+    handle.update(cx, |_, window, _| {
+        let hwnd = win32::hwnd(window)?;
+        unsafe {
+            win32::PostMessageW(hwnd, 0x0100, 0x1b, 1);
+            win32::PostMessageW(hwnd, 0x0101, 0x1b, 1);
+        }
+        Ok::<_, anyhow::Error>(())
+    })??;
+    pause(cx).await;
+    pause(cx).await;
+    handle.update(cx, |_, window, cx| {
+        let dialog = window.has_active_dialog(cx);
+        let s = view.read(cx);
+        anyhow::ensure!(
+            s.pending_reader_link.is_none() && !dialog && reader_link_opens(s) == opens,
+            "Escape did not cancel link opening"
+        );
+        Ok::<_, anyhow::Error>(())
+    })??;
+    click_reader_link(view, handle, cx).await?;
+    click(view, handle, "reader-link-confirm", false, cx)?;
+    pause(cx).await;
+    pause(cx).await;
+    handle.update(cx, |_, window, cx| {
+        view.update(cx, |s, cx| {
+            anyhow::ensure!(
+                s.pending_reader_link.is_none()
+                    && !window.has_active_dialog(cx)
+                    && reader_link_opens(s) == opens + 1,
+                "Confirm did not open exactly one link"
+            );
+            s.finish_reader_link(READER_TEST_URL, true, cx);
+            anyhow::ensure!(
+                reader_link_opens(s) == opens + 1,
+                "Stale confirmation opened the target again"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+    })??;
+    Ok(())
+}
+
+async fn text_reader_link_confirmation(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    path: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    let original = handle.update(cx, |_, _, cx| view.update(cx, |s, _| s.reader.take()))?;
+    let markdown: SharedString = format!("[Visible link]({READER_TEST_URL})").into();
+    for (name, document) in [
+        ("markdown", Document::Markdown(markdown.clone())),
+        (
+            "html",
+            Document::Html(
+                format!(
+                    "<p style='margin:0'><a href='{}'>Visible link</a></p>",
+                    READER_TEST_URL.replace('&', "&amp;")
+                )
+                .into(),
+            ),
+        ),
+        (
+            "bilingual",
+            Document::Bilingual(vec![(markdown.clone(), markdown.clone())]),
+        ),
+    ] {
+        let bilingual = matches!(document, Document::Bilingual(_));
+        handle.update(cx, |_, _, cx| {
+            view.update(cx, |s, cx| {
+                s.reader = Some(document);
+                s.reader_dirty = false;
+                cx.notify();
+            })
+        })?;
+        pause(cx).await;
+        screenshot(path, &format!("windows-reader-text-link-{name}"), cx).await?;
+        // These fixtures contain only one short link on the first text line.
+        for translated in 0..if bilingual { 2 } else { 1 } {
+            let pane = bounds(view, handle, "reader-viewport", cx)?;
+            let position = point(
+                pane.left()
+                    + px(if translated == 0 {
+                        30.
+                    } else {
+                        f32::from(pane.size.width) / 2. + 40.
+                    }),
+                pane.top() + px(12.),
+            );
+            let opens = handle.update(cx, |_, _, cx| reader_link_opens(view.read(cx)))?;
+            for (message, buttons) in [(0x0200, 0), (0x0201, 1), (0x0202, 0)] {
+                post_reader_pointer(handle, position, message, buttons, cx)?;
+            }
+            pause(cx).await;
+            handle.update(cx, |_, _, cx| {
+                let s = view.read(cx);
+                anyhow::ensure!(
+                    s.pending_reader_link.as_deref() == Some(READER_TEST_URL)
+                        && reader_link_opens(s) == opens,
+                    "Text reader link skipped confirmation (mode={name}, column={translated})"
+                );
+                Ok::<_, anyhow::Error>(())
+            })??;
+            click(view, handle, "reader-link-cancel", false, cx)?;
+            pause(cx).await;
+            pause(cx).await;
+        }
+    }
+    handle.update(cx, |_, _, cx| {
+        view.update(cx, |s, cx| {
+            s.reader = original;
+            cx.notify();
+        })
+    })?;
     pause(cx).await;
     Ok(())
 }
@@ -819,7 +1054,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // reloads the cached body, so a delayed check would race it.
             let html_ready=handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{
                 let body=s.body.as_mut().unwrap();
-                body.html=format!("<p style='font:18px Microsoft YaHei;margin:0;padding:12px'>Alpha 中文 Beta</p><table style='border:2px solid #226451'><tr><td><a href='https://example.com/synthetic-link'>Visible link</a></td></tr></table><img src='https://example.invalid/pixel.png'><script>document.body.dataset.executed='true'</script>{}",(0..80).map(|i|format!("<p>Scrollable synthetic paragraph {i}</p>")).collect::<String>());
+                body.html=format!("<p style='font:18px Microsoft YaHei;margin:0;padding:12px'>Alpha 中文 Beta</p><table style='border:2px solid #226451'><tr><td><a href='{}'>Visible link</a></td></tr></table><img src='https://example.invalid/pixel.png'><script>document.body.dataset.executed='true'</script>{}",READER_TEST_URL.replace('&', "&amp;"),(0..80).map(|i|format!("<p>Scrollable synthetic paragraph {i}</p>")).collect::<String>());
                 s.plain_reading=false;s.reader_dirty=true;s.update_reader(cx);cx.notify();
                 true
             }))?;
@@ -843,6 +1078,8 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
                 Ok::<_,anyhow::Error>(())
             })??;
             reader_selection(&view,handle,&path,cx).await?;
+            reader_link_confirmation(&view,handle,&path,cx).await?;
+            text_reader_link_confirmation(&view,handle,&path,cx).await?;
             long_reader(&view,handle,&path,cx).await?;
             #[cfg(windows)] reader_dpi(&view,handle,&path,cx).await?;
             // Opting in decodes embedded images, but never reaches local files.
@@ -877,7 +1114,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Opt-in long run for the memory curve; synthetic demo mail only.
             let reads=std::env::var("LIGHTMAIL_SOAK_READS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0);
             if reads>0 {soak(&view,handle,&path,reads,cx).await?;}
-            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","reader-bounded-long-document","reader-keyboard-home-end","reader-cross-region-copy","reader-uia-text-pattern","reader-uia-selected-range","reader-uia-selection-action","reader-native-dpi-transition","reader-native-page-down","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
+            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","reader-link-confirm-cancel","reader-link-escape-cancel","reader-link-confirm-once","reader-link-original-url","reader-text-link-confirmation","reader-bounded-long-document","reader-keyboard-home-end","reader-cross-region-copy","reader-uia-text-pattern","reader-uia-selected-range","reader-uia-selection-action","reader-native-dpi-transition","reader-native-page-down","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
         }.await;
         let report=match result{Ok(v)=>v,Err(e)=>serde_json::json!({"passed":false,"error":format!("{e:#}")})};
         let _=std::fs::create_dir_all(&path);let _=std::fs::write(path.join("native-acceptance.json"),report.to_string());

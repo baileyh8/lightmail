@@ -2,7 +2,10 @@ use crate::{
     events::{Event, Events, TranslationProgress},
     platform::DesktopPlatform,
 };
-use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
+use gpui_kit::component::{
+    input::{InputEvent, InputState, TextareaState},
+    WindowExt as _,
+};
 use gpui_kit::{prelude::*, *};
 use lightmail_core::Result;
 use lightmail_core::*;
@@ -113,6 +116,8 @@ pub struct MailDesktop {
     pub reader: Option<crate::reader::Document>,
     pub reader_dirty: bool,
     pub reader_error: Option<String>,
+    /// The exact link shown by the active confirmation dialog.
+    pub pending_reader_link: Option<String>,
     pub reader_focus: FocusHandle,
     pub reader_scroll: ScrollHandle,
     pub reader_surface: Bounds<Pixels>,
@@ -302,6 +307,7 @@ impl MailDesktop {
             reader: None,
             reader_dirty: false,
             reader_error: None,
+            pending_reader_link: None,
             reader_focus: cx.focus_handle(),
             reader_scroll: ScrollHandle::new(),
             reader_surface: Bounds::default(),
@@ -1630,6 +1636,7 @@ impl MailDesktop {
         &mut self,
         position: Point<Pixels>,
         inside: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.reader_anchor.is_none() {
@@ -1650,12 +1657,38 @@ impl MailDesktop {
         } else {
             None
         };
-        if let Some(href) = href.filter(|href| crate::reader::allowed_link(href)) {
+        if let Some(href) = href {
+            self.request_reader_link(&href, window, cx);
+        }
+    }
+    pub fn request_reader_link(&mut self, href: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if !crate::reader::allowed_link(href)
+            || self.pending_reader_link.is_some()
+            || window.has_active_dialog(cx)
+        {
+            return;
+        }
+        self.pending_reader_link = Some(href.to_owned());
+        self.record("reader-link-confirmation");
+        self.show_reader_link_confirmation(href.to_owned(), window, cx);
+        cx.notify();
+    }
+    pub fn finish_reader_link(&mut self, href: &str, confirmed: bool, cx: &mut Context<Self>) {
+        if self.pending_reader_link.as_deref() != Some(href) {
+            return;
+        }
+        self.pending_reader_link = None;
+        if confirmed && crate::reader::allowed_link(href) {
             self.record("reader-link-open");
             if self.acceptance.is_none() {
-                cx.open_url(&href);
+                // Validation must not rewrite signed query strings or fragments.
+                // GPUI delegates to the Windows default protocol handler.
+                cx.open_url(href);
             }
+        } else {
+            self.record("reader-link-cancel");
         }
+        cx.notify();
     }
     pub fn select_reader(
         &mut self,

@@ -2,8 +2,9 @@ use crate::app::{date, MailDesktop, Page};
 use crate::shortcuts::*;
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
-    input::{Input, Textarea},
-    Disableable, Selectable, Sizable,
+    dialog::{Cancel, Confirm, DialogFooter},
+    input::{Input, Textarea, TextareaState},
+    Disableable, Selectable, Sizable, WindowExt as _,
 };
 use gpui_kit::component::{
     menu::{DropdownMenu, PopupMenuItem},
@@ -76,7 +77,9 @@ fn folder_name(f: &Folder) -> String {
 
 // Geometry probes are active only in isolated demo acceptance runs.
 fn probe_marker(name: String, cx: &Context<MailDesktop>) -> impl IntoElement {
-    let weak = cx.entity().downgrade();
+    probe_marker_for(name, cx.entity().downgrade())
+}
+fn probe_marker_for(name: String, weak: WeakEntity<MailDesktop>) -> impl IntoElement {
     canvas(
         move |bounds, _, cx| {
             let _ = weak.update(cx, |s, _| {
@@ -93,12 +96,123 @@ fn probe_marker(name: String, cx: &Context<MailDesktop>) -> impl IntoElement {
     .size_full()
 }
 fn probe(name: &str, element: impl IntoElement, cx: &Context<MailDesktop>) -> Div {
+    probe_for(name, element, cx.entity().downgrade())
+}
+fn probe_for(name: &str, element: impl IntoElement, view: WeakEntity<MailDesktop>) -> Div {
     div()
         .relative()
         .child(element)
-        .child(probe_marker(name.into(), cx))
+        .child(probe_marker_for(name.into(), view))
 }
 impl MailDesktop {
+    pub fn show_reader_link_confirmation(
+        &self,
+        href: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let parsed = url::Url::parse(&href).expect("Reader link was validated");
+        let web = matches!(parsed.scheme(), "http" | "https");
+        let destination = parsed.host_str().map(str::to_owned);
+        let address = cx.new(|cx| {
+            let mut state = TextareaState::new(window, cx).rows(4);
+            state.set_value(href.clone(), window, cx);
+            state
+        });
+        let view = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let confirmed_view = view.clone();
+            let confirmed_href = href.clone();
+            let closed_view = view.clone();
+            let closed_href = href.clone();
+            let focused_address = address.clone();
+            alert
+                .title(if web {
+                    "打开邮件中的链接？"
+                } else {
+                    "打开邮件地址？"
+                })
+                .description(if web {
+                    "确认后将使用系统默认浏览器打开以下地址。"
+                } else {
+                    "确认后将使用系统默认邮件应用打开以下地址。"
+                })
+                .width(px(560.))
+                .confirm()
+                .child(
+                    column()
+                        .gap_2()
+                        .when_some(destination.clone(), |col, host| {
+                            col.child(muted("目标网站"))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).child(host))
+                        })
+                        .child(muted("完整地址（可选择复制）"))
+                        .child(
+                            // Kit 0.7's textarea enforces readonly but its frame
+                            // does not declare it to AccessKit. Own that semantic
+                            // frame here without patching the shared component.
+                            div()
+                                .id("reader-link-address-frame")
+                                .role(Role::MultilineTextInput)
+                                .accessibility_id("reader-link-address")
+                                .aria_label("链接完整地址")
+                                .aria_value(href.clone())
+                                .a11y_synthetic_children(|tree| {
+                                    tree.parent_node().set_read_only();
+                                })
+                                .on_a11y_action(AccessibleAction::Focus, move |_, window, cx| {
+                                    focused_address.update(cx, |state, cx| state.focus(window, cx));
+                                })
+                                .child(
+                                    Textarea::new(&address)
+                                        .readonly(true)
+                                        .role(None::<Role>)
+                                        .h(px(112.))
+                                        .w_full(),
+                                ),
+                        ),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(probe_for(
+                            "reader-link-cancel",
+                            Button::new("reader-link-cancel").label("取消").on_click(
+                                |_, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx);
+                                },
+                            ),
+                            view.clone(),
+                        ))
+                        .child(probe_for(
+                            "reader-link-confirm",
+                            Button::new("reader-link-confirm")
+                                .label(if web {
+                                    "用默认浏览器打开"
+                                } else {
+                                    "用默认邮件应用打开"
+                                })
+                                .primary()
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(Confirm { secondary: false }),
+                                        cx,
+                                    );
+                                }),
+                            view.clone(),
+                        )),
+                )
+                .on_ok(move |_, _, cx| {
+                    let _ = confirmed_view
+                        .update(cx, |s, cx| s.finish_reader_link(&confirmed_href, true, cx));
+                    true
+                })
+                .on_close(move |_, _, cx| {
+                    let _ = closed_view
+                        .update(cx, |s, cx| s.finish_reader_link(&closed_href, false, cx));
+                })
+        });
+    }
+
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = column()
             .id("sidebar-scroll")

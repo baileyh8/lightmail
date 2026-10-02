@@ -216,6 +216,10 @@ flowchart LR
 
 已同步并处理 UI Automation 选区请求，以 Unicode 字符位置复用现有选择逻辑；外部请求尾部中文后，原生界面和剪贴板一致。Windows 26 项回归、核心 56 项、34 项原生验收与真实邮件 180 组检查通过。隔离窗口经历 150% / 200% / 原 DPI 的消息切换，并验证原生 PageDown；不代替物理多屏、硬件键盘和 Narrator 人工测试。详细内存与边界见 [选区和 DPI 记录](windows-blitz-selection-dpi.md)。
 
+### I7.5 邮件链接二次确认（2026-10-02）
+
+已统一 HTML、Markdown、翻译和双语正文的链接入口：点击显示实际目标网站与可复制的完整地址，确认后使用系统默认浏览器打开 HTTP/HTTPS；取消和 Esc 不打开。保留 `mailto:` 的默认邮件应用行为，拒绝其他协议，拖选链接不触发确认。Windows 26 项回归、核心 56 项和 39 项原生验收通过；确认门槛、URL 原样保留及只读辅助功能声明均已验证。验收拦截浏览器启动，不访问真实邮件目标。详见 [链接确认记录](windows-mail-link-confirmation.md)。
+
 ## 5. 风险
 
 原文 HTML 已切换为 Blitz；早期 Kit HTML 崩溃路径不再承载原文阅读。当前采用有界视口绘图和 GPUI 交互适配，保留真实样本兼容、多屏/物理键盘及完整屏幕阅读器体验验收。历史调研见 [排版记录](windows-html-renderer-research.md)。
