@@ -307,37 +307,66 @@ mod diagnostics {
     #[test]
     #[ignore = "explicit, no-auth live TLS diagnostic only"]
     fn live_mail_proxy_tls() {
+        use lettre::{
+            transport::smtp::{
+                client::{Tls, TlsParameters},
+                extension::ClientId,
+            },
+            AsyncSmtpTransport, Tokio1Executor,
+        };
+        use tokio::io::AsyncReadExt;
         let port: u16 = std::env::var("LIGHTMAIL_DIAGNOSTIC_PROXY_PORT")
             .expect("explicit proxy port")
             .parse()
             .unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
+        let records = rt.block_on(async {
+            let mut records = Vec::new();
             for kind in ["http", "socks5"] {
-                for (host, target_port) in [("imap.gmail.com", 993), ("smtp.gmail.com", 465)] {
-                    let proxy = super::Proxy {
-                        kind: kind.into(),
-                        host: "127.0.0.1".into(),
-                        port,
-                    };
+                for (host, target_port) in [("imap.gmail.com", 993), ("smtp.gmail.com", 465), ("smtp.gmail.com", 587)] {
+                    let proxy = super::Proxy { kind: kind.into(), host: "127.0.0.1".into(), port };
+                    let started = std::time::Instant::now();
                     let check = async {
-                        let tcp = super::connect(host, target_port, Some(&proxy))
-                            .await
-                            .unwrap();
-                        let mut builder = native_tls::TlsConnector::builder();
-                        builder.min_protocol_version(Some(native_tls::Protocol::Tlsv12));
-                        let tls = tokio_native_tls::TlsConnector::from(builder.build().unwrap());
-                        tls.connect(host, tcp)
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
+                        if target_port == 993 {
+                            let tcp = super::connect(host, target_port, Some(&proxy)).await.map_err(|_| "proxy tunnel failed")?;
+                            let mut builder = native_tls::TlsConnector::builder();
+                            builder.min_protocol_version(Some(native_tls::Protocol::Tlsv12));
+                            let tls = tokio_native_tls::TlsConnector::from(builder.build().map_err(|_| "TLS setup failed")?);
+                            let mut stream = tls.connect(host, tcp).await.map_err(|_| "TLS validation failed")?;
+                            let mut greeting = [0; 1024];
+                            let read = stream.read(&mut greeting).await.map_err(|_| "server greeting failed")?;
+                            if !greeting[..read].starts_with(b"* OK") { return Err("unexpected IMAP greeting"); }
+                        } else {
+                            let tunnel = super::SmtpTunnel::open(host, target_port, &proxy).await.map_err(|_| "SMTP proxy tunnel failed")?;
+                            let tls = TlsParameters::new(host.into()).map_err(|_| "TLS setup failed")?;
+                            let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
+                                .port(tunnel.port).hello_name(ClientId::Domain("lightmail-diagnostic.invalid".into()))
+                                .tls(if target_port == 465 { Tls::Wrapper(tls) } else { Tls::Required(tls) })
+                                .timeout(Some(std::time::Duration::from_secs(12))).build::<Tokio1Executor>();
+                            // No credentials, AUTH, MAIL FROM, RCPT TO or DATA.
+                            if !transport.test_connection().await.map_err(|_| "SMTP TLS or NOOP failed")? { return Err("SMTP NOOP rejected"); }
+                        }
+                        Ok::<_, &str>(())
                     };
-                    println!(
-                        "{kind} {host}:{target_port} {:?}",
-                        tokio::time::timeout(std::time::Duration::from_secs(15), check).await
-                    );
+                    let result = tokio::time::timeout(std::time::Duration::from_secs(20), check).await;
+                    let error = match result { Ok(Ok(())) => None, Ok(Err(error)) => Some(error), Err(_) => Some("timeout") };
+                    let row = serde_json::json!({"kind":kind,"proxy":"127.0.0.1","proxyPort":port,"host":host,"port":target_port,"passed":error.is_none(),"error":error,"elapsedMs":started.elapsed().as_millis()});
+                    println!("{row}"); records.push(row);
                 }
             }
+            records
         });
+        if let Ok(directory) = std::env::var("LIGHTMAIL_DIAGNOSTIC_REPORT_DIR") {
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                std::path::Path::new(&directory).join("mail-tls.json"),
+                serde_json::to_vec_pretty(&records).unwrap(),
+            )
+            .unwrap();
+        }
+        assert!(
+            records.iter().all(|row| row["passed"] == true),
+            "live mail proxy diagnostic failed"
+        );
     }
 }

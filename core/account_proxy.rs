@@ -191,6 +191,79 @@ mod tests {
     use super::*;
     use crate::application_tests::{Events, TestPlatform};
 
+    #[test]
+    #[ignore = "explicit live proxy check; public Google endpoints, no account credentials"]
+    fn live_account_proxy_google_http() {
+        let port: u16 = std::env::var("LIGHTMAIL_DIAGNOSTIC_PROXY_PORT")
+            .expect("explicit proxy port")
+            .parse()
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let engine = MailEngine::new(directory.path().to_string_lossy().into()).unwrap();
+        let platform = Arc::new(TestPlatform::default());
+        *platform.route.lock().unwrap() = Some(ProxyRoute {
+            kind: "http".into(),
+            host: "127.0.0.1".into(),
+            port: 1,
+        });
+        let app = crate::MailApplication::new(
+            engine.clone(),
+            platform.clone(),
+            Arc::new(Events::default()),
+        );
+        let records = crate::platform::runtime().block_on(async {
+            let mut records = Vec::new();
+            for (mode, kind) in [(AccountProxyMode::Http, "http"), (AccountProxyMode::Socks5, "socks5")] {
+                let id = format!("live-probe-{kind}");
+                let account = Account { id: id.clone(), name: "Proxy diagnostic".into(), address: "probe@example.test".into(), provider: "custom".into(), imap_host: "imap.gmail.com".into(), imap_port: 993, smtp_host: "smtp.gmail.com".into(), smtp_port: 465, auth_kind: "password".into(), color: "#226451".into(), enabled: false, sent_mode: "server".into() };
+                engine.save_account_record(account, Some(settings(mode, "127.0.0.1", port))).unwrap();
+                let scoped = app.account_platform(&id).unwrap();
+                for (endpoint, expected, post) in [
+                    ("https://accounts.google.com/.well-known/openid-configuration", 200, false),
+                    ("https://oauth2.googleapis.com/token", 400, true),
+                    ("https://openidconnect.googleapis.com/v1/userinfo", 401, false),
+                ] {
+                    let started = std::time::Instant::now();
+                    let mut observed_status = None;
+                    let check = async {
+                        let client = crate::platform::http_client(scoped.as_ref(), endpoint, 15).map_err(|_| "client setup failed")?;
+                        // Explicitly invalid grant, no client id, code, token or secret.
+                        let request = if post { client.post(endpoint).form(&[("grant_type", "invalid_lightmail_diagnostic")]) } else { client.get(endpoint) };
+                        let response = request.send().await.map_err(|_| "HTTPS request failed")?;
+                        let status = response.status().as_u16();
+                        observed_status = Some(status);
+                        if status != expected { return Err("unexpected endpoint status"); }
+                        let body = crate::platform::limited_body(response, 64 * 1024).await.map_err(|_| "response read failed")?;
+                        let value: serde_json::Value = serde_json::from_slice(&body).map_err(|_| "expected JSON response")?;
+                        if expected == 200 && value["authorization_endpoint"] != "https://accounts.google.com/o/oauth2/v2/auth" { return Err("unexpected Google discovery response"); }
+                        if post && value["error"] != "unsupported_grant_type" { return Err("unexpected token diagnostic response"); }
+                        Ok::<_, &str>(status)
+                    };
+                    let result = tokio::time::timeout(std::time::Duration::from_secs(18), check).await;
+                    let (status, error) = match result { Ok(Ok(status)) => (Some(status), None), Ok(Err(error)) => (observed_status, Some(error)), Err(_) => (observed_status, Some("timeout")) };
+                    let row = serde_json::json!({"kind":kind,"proxy":"127.0.0.1","proxyPort":port,"endpoint":endpoint,"expectedStatus":expected,"actualStatus":status,"passed":error.is_none(),"error":error,"elapsedMs":started.elapsed().as_millis()});
+                    println!("{row}"); records.push(row);
+                }
+                // A neighboring direct account must override even a broken system route.
+                let direct = AccountProxySettings { mode: AccountProxyMode::Direct, ..Default::default() }.scoped_platform(platform.clone()).unwrap();
+                assert_eq!(direct.proxy_for("imap.gmail.com".into()).unwrap().kind, "direct");
+            }
+            records
+        });
+        if let Ok(directory) = std::env::var("LIGHTMAIL_DIAGNOSTIC_REPORT_DIR") {
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                std::path::Path::new(&directory).join("google-http.json"),
+                serde_json::to_vec_pretty(&records).unwrap(),
+            )
+            .unwrap();
+        }
+        assert!(
+            records.iter().all(|row| row["passed"] == true),
+            "live Google proxy diagnostic failed"
+        );
+    }
+
     fn settings(mode: AccountProxyMode, host: &str, port: u16) -> AccountProxySettings {
         AccountProxySettings {
             mode,

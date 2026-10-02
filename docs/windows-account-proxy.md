@@ -49,4 +49,17 @@ Windows 只负责表单、系统代理、凭据管理器和外部浏览器。新
 
 证据保存于忽略的 `build/windows-account-proxy-20261002-verified/`。未运行真实邮箱发信，未安装或卸载，未推送。真实服务商授权和代理规则仍需用实际账号使用验证。
 
+### 本机 10808 实网验证（2026-10-02）
+
+按用户指定，使用本机 `127.0.0.1:10808` 的 HTTP 和 SOCKS5 分别访问真实 Google/Gmail 服务，每种协议 6 项，共 12 项通过：
+
+- Gmail IMAP 993：项目实际代理连接函数、服务器证书验证及未登录欢迎消息。
+- Gmail SMTP 465 / 587：项目实际 SMTP 隧道和 Lettre，分别完成隐式 TLS / STARTTLS 与 NOOP；不配置凭据，不发送邮件。
+- Google 公开发现文档：HTTP 200 且授权端点正确。
+- Google 令牌端点：明确无效的 grant 类型返回预期 HTTP 400；身份端点无凭据返回预期 HTTP 401。这证明服务可达，不代表完成 OAuth 登录或刷新。
+
+HTTP 请求通过已持久化的诊断账号和 `MailApplication::account_platform`，同时将基础系统路由设为不可用，确认明确的账号配置覆盖系统路由；独立直连策略仍返回直连。没有读取真实邮箱数据库、登录信息或更改用户账号。
+
+报告保存在 `build/windows-live-proxy-10808-20261002-verified/` 的 `result.json`、`mail-tls.json` 和 `google-http.json`。可用 `scripts/check-live-account-proxy.ps1 -ProxyPort 10808` 重复测试，默认新建带时间的报告目录，失败返回非零状态。诊断默认忽略，日常测试不会访问外网；本轮只修改诊断和文档，已提供的 `88e930a` 测试包无需替换。
+
 依据：[Google 桌面 OAuth 与本机回调](https://developers.google.com/identity/protocols/oauth2/native-app)、[Edge 代理参数](https://learn.microsoft.com/en-us/deployedge/edge-learnmore-cmdline-options-proxy-settings)、[Chromium 代理说明](https://chromium.googlesource.com/chromium/src/+/main/net/docs/proxy.md)、[Edge 代理策略](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/ProxySettings)、[配置目录策略](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/UserDataDir)、[Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)。
