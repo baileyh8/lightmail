@@ -100,11 +100,18 @@ impl Rect {
 pub struct Selected {
     pub text: String,
     pub rects: Vec<Rect>,
+    pub accessible: Option<(TextPosition, TextPosition)>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextPosition {
+    pub key: u64,
+    pub character: usize,
 }
 pub enum Select {
     Clear,
     Range(Point, Point),
     All,
+    Accessible(TextPosition, TextPosition),
 }
 
 pub struct Rendered {
@@ -410,7 +417,7 @@ impl Session {
                 let layout = node.final_layout();
                 Some(AccessibleText {
                     key: hasher.finish(),
-                    text: format!("{}\n", data.text.trim_end()).into(),
+                    text: format!("{}\n", data.text).into(),
                     bounds: Rect {
                         x: position.x + layout.padding.left + layout.border.left,
                         y: position.y + layout.padding.top + layout.border.top,
@@ -558,6 +565,34 @@ impl Session {
         self.selected_range = match selection {
             Select::Clear => SelectedRange::None,
             Select::All => SelectedRange::All,
+            Select::Accessible(a, b) => {
+                let convert = |position: TextPosition| {
+                    let index = self
+                        .accessible
+                        .iter()
+                        .position(|block| block.key == position.key)?;
+                    let id = *self.roots.get(index)?;
+                    let text = &doc
+                        .get_node(id)?
+                        .element_data()?
+                        .inline_layout_data
+                        .as_ref()?
+                        .text;
+                    if position.character > text.chars().count() + 1 {
+                        return None;
+                    }
+                    let byte = text
+                        .char_indices()
+                        .nth(position.character)
+                        .map(|(i, _)| i)
+                        .unwrap_or(text.len());
+                    Some(Endpoint::new(doc, id, byte))
+                };
+                match (convert(a), convert(b)) {
+                    (Some(a), Some(b)) => SelectedRange::Range(a, b),
+                    _ => SelectedRange::None,
+                }
+            }
             Select::Range(a, b) => match (
                 doc.find_text_position(a.x, a.y)
                     .filter(|(id, _)| self.roots.contains(id)),
@@ -670,9 +705,49 @@ impl Session {
                 })
             });
         }
+        let convert = |id, offset| {
+            let index = self.roots.iter().position(|&candidate| candidate == id)?;
+            let key = self.accessible.get(index)?.key;
+            let text = &doc
+                .get_node(id)?
+                .element_data()?
+                .inline_layout_data
+                .as_ref()?
+                .text;
+            Some(TextPosition {
+                key,
+                character: text.get(..offset)?.chars().count(),
+            })
+        };
+        let accessible = match &self.selected_range {
+            SelectedRange::None => None,
+            SelectedRange::All => {
+                let first = self.roots.first().copied();
+                let last = self.roots.last().copied();
+                first.zip(last).and_then(|(a, b)| {
+                    Some((
+                        convert(a, 0)?,
+                        convert(
+                            b,
+                            doc.get_node(b)?
+                                .element_data()?
+                                .inline_layout_data
+                                .as_ref()?
+                                .text
+                                .len(),
+                        )?,
+                    ))
+                })
+            }
+            SelectedRange::Range(a, b) => a
+                .resolve(doc)
+                .zip(b.resolve(doc))
+                .and_then(|((a, ai), (b, bi))| Some((convert(a, ai)?, convert(b, bi)?))),
+        };
         Selected {
             text: blocks.join("\n"),
             rects,
+            accessible,
         }
     }
 }
@@ -824,7 +899,9 @@ fn nearest_position(
 
 #[cfg(test)]
 mod tests {
-    use super::{image_sources, render, Point, ReaderViewport, Select, Session, Worker};
+    use super::{
+        image_sources, render, Point, ReaderViewport, Select, Session, TextPosition, Worker,
+    };
     use crate::platform::DesktopPlatform;
     use std::sync::Arc;
     use std::{
@@ -1226,6 +1303,44 @@ mod tests {
             assert_eq!(selected.text, "Header\nTail 中文");
             assert!(selected.rects.last().unwrap().y >= 20000.);
         }
+    }
+    #[test]
+    fn accessible_selection_maps_unicode_positions_and_rejects_stale_keys() {
+        let mut s = session("<p>Start 中文 👩🏽‍💻</p><p>End Café</p>", 360, 1.);
+        s.paint().unwrap();
+        let a = TextPosition {
+            key: s.accessible[0].key,
+            character: 6,
+        };
+        let b = TextPosition {
+            key: s.accessible[1].key,
+            character: 3,
+        };
+        let selected = s.select(Select::Accessible(a, b));
+        assert_eq!(selected.text, "中文 👩🏽‍💻\nEnd");
+        assert_eq!(selected.accessible, Some((a, b)));
+        assert_eq!(s.select(Select::Accessible(b, a)).text, selected.text);
+        assert!(s
+            .select(Select::Accessible(
+                TextPosition {
+                    key: 0,
+                    character: 0
+                },
+                b
+            ))
+            .text
+            .is_empty());
+        assert!(s
+            .select(Select::Accessible(
+                TextPosition {
+                    key: a.key,
+                    character: usize::MAX
+                },
+                b
+            ))
+            .text
+            .is_empty());
+        assert!(s.select(Select::Clear).accessible.is_none());
     }
 
     #[test]

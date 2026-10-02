@@ -117,6 +117,7 @@ pub struct MailDesktop {
     pub reader_scroll: ScrollHandle,
     pub reader_surface: Bounds<Pixels>,
     pub reader_selection: crate::blitz_reader::Selected,
+    pub reader_accessible_ids: std::rc::Rc<std::cell::RefCell<HashMap<accesskit::NodeId, u64>>>,
     reader_viewport: crate::blitz_reader::ReaderViewport,
     reader_paint_request: Option<crate::blitz_reader::Point>,
     reader_worker: crate::blitz_reader::Worker,
@@ -305,6 +306,7 @@ impl MailDesktop {
             reader_scroll: ScrollHandle::new(),
             reader_surface: Bounds::default(),
             reader_selection: Default::default(),
+            reader_accessible_ids: Default::default(),
             reader_viewport: Default::default(),
             reader_paint_request: None,
             reader_worker: crate::blitz_reader::Worker::new(),
@@ -1441,6 +1443,7 @@ impl MailDesktop {
         self.blitz_task = None;
         self.clear_reader_selection(cx);
         self.reader = None;
+        self.reader_accessible_ids.borrow_mut().clear();
         self.reader_paint_request = None;
         let Some(body) = &self.body else {
             self.reader_worker.clear(self.blitz_generation);
@@ -1698,6 +1701,38 @@ impl MailDesktop {
             self.record("copy-reader-selection");
             cx.notify();
         }
+    }
+    pub fn accessible_reader_selection(
+        &mut self,
+        selection: &accesskit::TextSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (a, b) = {
+            let ids = self.reader_accessible_ids.borrow();
+            (
+                ids.get(&selection.anchor.node).copied(),
+                ids.get(&selection.focus.node).copied(),
+            )
+        };
+        let (Some(a), Some(b)) = (a, b) else {
+            return;
+        };
+        window.focus(&self.reader_focus, cx);
+        self.select_reader(
+            crate::blitz_reader::Select::Accessible(
+                crate::blitz_reader::TextPosition {
+                    key: a,
+                    character: selection.anchor.character_index,
+                },
+                crate::blitz_reader::TextPosition {
+                    key: b,
+                    character: selection.focus.character_index,
+                },
+            ),
+            cx,
+        );
+        cx.notify();
     }
 }
 pub fn date(timestamp: i64) -> String {

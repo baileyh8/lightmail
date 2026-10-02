@@ -35,11 +35,20 @@ mod win32 {
         pub x: i32,
         pub y: i32,
     }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct DeviceRect {
+        pub left: i32,
+        pub top: i32,
+        pub right: i32,
+        pub bottom: i32,
+    }
     #[link(name = "user32")]
     extern "system" {
         pub fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
         pub fn SendMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> isize;
         pub fn ClientToScreen(hwnd: *mut c_void, point: *mut DevicePoint) -> i32;
+        pub fn GetWindowRect(hwnd: *mut c_void, rect: *mut DeviceRect) -> i32;
     }
     pub fn hwnd(window: &Window) -> anyhow::Result<*mut c_void> {
         match HasWindowHandle::window_handle(window)
@@ -569,6 +578,25 @@ async fn long_reader(
             "Accessibility fixture failed: {}",
             String::from_utf8_lossy(&result.stderr)
         );
+        handle.update(cx, |_, window, cx| {
+            anyhow::ensure!(
+                view.read(cx).reader_selection.text == "Long tail 中文",
+                "UIA selection did not reach the native reader"
+            );
+            window.dispatch_action(Box::new(crate::shortcuts::CopyReaderSelection), cx);
+            Ok::<_, anyhow::Error>(())
+        })??;
+        pause(cx).await;
+        handle.update(cx, |_, _, cx| {
+            anyhow::ensure!(
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref()
+                    == Some("Long tail 中文"),
+                "UIA selection copied different text"
+            );
+            Ok::<_, anyhow::Error>(())
+        })??;
     }
     handle.update(cx, |_, window, cx| {
         window.dispatch_action(Box::new(crate::shortcuts::ReaderStart), cx)
@@ -581,6 +609,101 @@ async fn long_reader(
         anyhow::ensure!(
             matches!(view.read(cx).reader.as_ref(),Some(Document::Blitz(r)) if r.area.y==0.),
             "Home did not repaint the header"
+        );
+        Ok::<_, anyhow::Error>(())
+    })??;
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn reader_dpi(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    path: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    let (hwnd, original, initial) = handle.update(cx, |_, window, _| {
+        let hwnd = win32::hwnd(window)?;
+        let mut rect = win32::DeviceRect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        anyhow::ensure!(
+            unsafe { win32::GetWindowRect(hwnd, &mut rect) } != 0,
+            "DPI fixture rectangle missing"
+        );
+        Ok::<_, anyhow::Error>((hwnd as usize, rect, window.scale_factor()))
+    })??;
+    for scale in [1.5f32, 2., initial] {
+        let ratio = scale / initial;
+        let rect = win32::DeviceRect {
+            left: original.left,
+            top: original.top,
+            right: original.left + ((original.right - original.left) as f32 * ratio) as i32,
+            bottom: original.top + ((original.bottom - original.top) as f32 * ratio) as i32,
+        };
+        cx.background_spawn(async move {
+            let dpi = (scale * 96.).round() as usize;
+            unsafe {
+                win32::SendMessageW(
+                    hwnd as *mut win32::c_void,
+                    0x02e0,
+                    dpi | dpi << 16,
+                    &rect as *const _ as isize,
+                )
+            };
+        })
+        .await;
+        for _ in 0..60 {
+            pause(cx).await;
+            if handle.update(cx,|_,window,cx| window.scale_factor()==scale&&matches!(view.read(cx).reader.as_ref(),Some(Document::Blitz(r)) if r.viewport.scale==scale))? {break;}
+        }
+        handle.update(cx, |_, window, cx| {
+            let Some(Document::Blitz(r)) = &view.read(cx).reader else {
+                anyhow::bail!("DPI transition lost HTML reader");
+            };
+            anyhow::ensure!(
+                window.scale_factor() == scale && r.viewport.scale == scale,
+                "Reader ignored native DPI transition"
+            );
+            let image = image::load_from_memory(&r.image.bytes)?;
+            anyhow::ensure!(
+                image.width() == (r.area.width * scale).ceil() as u32
+                    && image.height() == (r.area.height * scale).ceil() as u32,
+                "DPI surface does not match actual window scale"
+            );
+            Ok::<_, anyhow::Error>(())
+        })??;
+        screenshot(
+            path,
+            &format!("windows-reader-dpi-{}", (scale * 100.) as u32),
+            cx,
+        )
+        .await?;
+    }
+    // Post an unmodified PageDown through this window's native keyboard path.
+    handle.update(cx, |_, window, cx| {
+        let focus = view.read(cx).reader_focus.clone();
+        window.focus(&focus, cx);
+        unsafe {
+            win32::PostMessageW(hwnd as *mut win32::c_void, 0x0100, 0x22, 1);
+            win32::PostMessageW(hwnd as *mut win32::c_void, 0x0101, 0x22, 1);
+        }
+    })?;
+    for _ in 0..40 {
+        pause(cx).await;
+        if handle.update(cx, |_, _, cx| {
+            f32::from(view.read(cx).reader_scroll.offset().y) < -10.
+        })? {
+            break;
+        }
+    }
+    handle.update(cx, |_, _, cx| {
+        anyhow::ensure!(
+            f32::from(view.read(cx).reader_scroll.offset().y) < -10.,
+            "Native PageDown did not scroll reader"
         );
         Ok::<_, anyhow::Error>(())
     })??;
@@ -721,6 +844,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             })??;
             reader_selection(&view,handle,&path,cx).await?;
             long_reader(&view,handle,&path,cx).await?;
+            #[cfg(windows)] reader_dpi(&view,handle,&path,cx).await?;
             // Opting in decodes embedded images, but never reaches local files.
             handle.update(cx,|_,_,cx|view.update(cx,|s,cx|{s.images=true;cx.notify();}))?;
             handle.update(cx,|_,_,cx|{
@@ -753,7 +877,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Opt-in long run for the memory curve; synthetic demo mail only.
             let reads=std::env::var("LIGHTMAIL_SOAK_READS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0);
             if reads>0 {soak(&view,handle,&path,reads,cx).await?;}
-            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","reader-bounded-long-document","reader-keyboard-home-end","reader-cross-region-copy","reader-uia-text-pattern","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
+            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","reader-bounded-long-document","reader-keyboard-home-end","reader-cross-region-copy","reader-uia-text-pattern","reader-uia-selected-range","reader-uia-selection-action","reader-native-dpi-transition","reader-native-page-down","remote-image-policy","image-opt-in","clipboard","account-whitespace","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
         }.await;
         let report=match result{Ok(v)=>v,Err(e)=>serde_json::json!({"passed":false,"error":format!("{e:#}")})};
         let _=std::fs::create_dir_all(&path);let _=std::fs::write(path.join("native-acceptance.json"),report.to_string());

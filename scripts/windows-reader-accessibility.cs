@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Text;
 using System.Windows.Automation;
+using System.Windows.Automation.Text;
 
 class ReaderAccessibilityProbe {
     delegate bool Visitor(IntPtr window, IntPtr data);
@@ -33,7 +34,21 @@ class ReaderAccessibilityProbe {
                 if (body != null && body.TryGetCurrentPattern(TextPattern.Pattern, out pattern)) {
                     string text = ((TextPattern)pattern).DocumentRange.GetText(-1);
                     if (text.Contains("Long header 中文") && text.Contains("Long tail 中文")) {
-                        Console.WriteLine("UIA text pattern: full synthetic body available; characters=" + text.Length);
+                        var provider=(TextPattern)pattern;
+                        var selected=provider.GetSelection();
+                        if(selected.Length!=1 || !selected[0].GetText(-1).Contains("Long header 中文") || !selected[0].GetText(-1).Contains("Long tail 中文")) throw new Exception("UIA did not expose the app's cross-region selection");
+                        var tail=provider.DocumentRange.Clone();
+                        tail.MoveEndpointByRange(TextPatternRangeEndpoint.Start,tail,TextPatternRangeEndpoint.End);
+                        tail.MoveEndpointByUnit(TextPatternRangeEndpoint.Start,TextUnit.Character,-("Long tail 中文\n".Length));
+                        tail.Select();
+                        var selectionDeadline=Stopwatch.StartNew();bool selectedTail=false;
+                        while(selectionDeadline.ElapsedMilliseconds<5000) {
+                            selected=provider.GetSelection();
+                            if(selected.Length==1 && selected[0].GetText(-1).Trim()=="Long tail 中文") {selectedTail=true;break;}
+                            Thread.Sleep(100);
+                        }
+                        if(!selectedTail) throw new Exception("UIA selection action did not update the app");
+                        Console.WriteLine("UIA text pattern: full body, exposed selection and selection action verified; characters=" + text.Length);
                         return 0;
                     }
                 }

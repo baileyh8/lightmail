@@ -127,6 +127,20 @@ pub fn view(
                 .role(Role::Document)
                 .accessibility_id("mail-body")
                 .aria_label("邮件正文")
+                .on_a11y_action(AccessibleAction::SetTextSelection, {
+                    let view = cx.entity().downgrade();
+                    move |data, window, cx| {
+                        if let Some(accesskit::ActionData::SetTextSelection(selection)) = data {
+                            let _ = view.update(cx, |s, cx| {
+                                s.accessible_reader_selection(selection, window, cx)
+                            });
+                        }
+                    }
+                })
+                .on_a11y_action(AccessibleAction::Focus, {
+                    let focus = state.reader_focus.clone();
+                    move |_, window, cx| window.focus(&focus, cx)
+                })
                 .on_action(
                     cx.listener(|s, _: &crate::shortcuts::ReaderPageDown, _, cx| {
                         s.scroll_reader(1, cx)
@@ -199,10 +213,16 @@ pub fn view(
             }
             let accessible = rendered.accessible.clone();
             let scale = rendered.viewport.scale as f64;
+            let selected = state.reader_selection.accessible;
+            let accessible_ids = state.reader_accessible_ids.clone();
             surface = surface.a11y_synthetic_children(move |tree| {
                 let origin = tree.parent_node().bounds().unwrap_or_default();
+                let mut ids = std::collections::HashMap::new();
+                let mut selection_ids = std::collections::HashMap::new();
                 for block in accessible.iter() {
                     let id = tree.synthetic_node_id(block.key);
+                    ids.insert(id, block.key);
+                    selection_ids.insert(block.key, id);
                     let mut node = accesskit::Node::new(Role::TextRun);
                     node.set_value(block.text.to_string());
                     node.set_character_lengths(
@@ -220,6 +240,24 @@ pub fn view(
                     });
                     tree.push_child(id, node);
                 }
+                if let Some((a, b)) = selected {
+                    if let (Some(&a_id), Some(&b_id)) =
+                        (selection_ids.get(&a.key), selection_ids.get(&b.key))
+                    {
+                        tree.parent_node()
+                            .set_text_selection(accesskit::TextSelection {
+                                anchor: accesskit::TextPosition {
+                                    node: a_id,
+                                    character_index: a.character,
+                                },
+                                focus: accesskit::TextPosition {
+                                    node: b_id,
+                                    character_index: b.character,
+                                },
+                            });
+                    }
+                }
+                *accessible_ids.borrow_mut() = ids;
             });
             for (index, rect) in state.reader_selection.rects.iter().enumerate() {
                 surface = surface.child(
