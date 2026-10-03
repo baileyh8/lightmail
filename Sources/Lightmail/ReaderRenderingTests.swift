@@ -22,18 +22,21 @@ enum ReaderRenderingTests {
       <html><head><style>@import url('\(base)/external.css');
       .receipt{width:440px}.receipt td{padding:12px;color:rgb(18,52,86)}
       .background{background-image:url('\(base)/background.png')}</style></head>
-      <body><table class='receipt'><tr><td class='amount'>20.00</td></tr></table>
+      <body><img id='inline-image' src='cid:fixture-logo' width='12' height='12'><table class='receipt'><tr><td class='amount'>20.00</td></tr></table>
       <div class='background' style='width:20px;height:20px'>Image</div>
       <a href='https://example.com/verify?token=a%2Bb%3D'><img src='\(base)/button.png' alt='Verify email' width='140' height='40'></a>
       <script src='\(base)/script.js'></script><iframe src='\(base)/frame'></iframe></body></html>
       """
       let eml = root.appendingPathComponent("render.eml")
-      try Data("From: fixture@example.com\r\nSubject: Render fixture\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\(html)".utf8).write(to: eml)
+      let pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII="
+      let messageSource = "From: fixture@example.com\r\nSubject: Render fixture\r\nMIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=reader-fixture\r\n\r\n--reader-fixture\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\(html)\r\n--reader-fixture\r\nContent-Type: image/png\r\nContent-ID: <fixture-logo>\r\nContent-Transfer-Encoding: base64\r\n\r\n\(pixel)\r\n--reader-fixture--\r\n"
+      try Data(messageSource.utf8).write(to: eml)
       let engine = try MailEngine(directory: root.appendingPathComponent("db").path)
       try engine.seedDemo()
       let account = try engine.accounts()[0]
       let message = try engine.importEml(path: eml.path, accountId: account.id)
       let body = try engine.cachedBody(messageId: message.id)!
+      check(body.html.contains("data:image/png;base64,"), "MIME CID resolves into a bounded inline raster image")
       let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 500),
                             styleMask: [.titled], backing: .buffered, defer: false)
       let host = NSHostingView(rootView: SafeHTMLView(html: body.html))
@@ -61,6 +64,7 @@ enum ReaderRenderingTests {
       pump(0.5)
       let requests = root.appendingPathComponent("requests.txt")
       check(try String(contentsOf: requests, encoding: .utf8).isEmpty, "default reader makes zero image CSS script or frame requests")
+      check(evaluate("document.getElementById('inline-image').naturalWidth") as? Int == 0, "inline images remain blocked until explicit image choice")
       host.rootView = SafeHTMLView(html: body.html, loadImages: true)
       host.layoutSubtreeIfNeeded()
       let imageDeadline = Date().addingTimeInterval(10)
@@ -68,12 +72,13 @@ enum ReaderRenderingTests {
       while Date() < imageDeadline {
         pump(0.05)
         paths = try String(contentsOf: requests, encoding: .utf8)
-        if paths.contains("/button.png") && paths.contains("/background.png") { break }
+        if paths.contains("/button.png") && paths.contains("/background.png") && evaluate("document.getElementById('inline-image').naturalWidth") as? Int == 1 { break }
       }
       check(paths.contains("/button.png") && paths.contains("/background.png"), "explicit image choice loads mail images")
       check(!paths.contains("external.css") && !paths.contains("script.js") && !paths.contains("/frame"), "image choice keeps CSS imports scripts and frames blocked")
+      check(evaluate("document.getElementById('inline-image').naturalWidth") as? Int == 1, "explicit image choice renders the CID raster in WKWebView")
       window.contentView = nil
-      print("Reader rendering: 7 passed (isolated loopback fixture)")
+      print("Reader rendering: 10 passed (isolated loopback fixture)")
     } catch { print("FAIL reader: \(userError(error))"); exit(1) }
   }
 }

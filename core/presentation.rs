@@ -103,7 +103,7 @@ pub fn reader_content(
 #[uniffi::export]
 pub fn reader_document(html: String, load_images: bool) -> String {
     let sources = if load_images {
-        "https: http:"
+        "https: http: data:"
     } else {
         "'none'"
     };

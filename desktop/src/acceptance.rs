@@ -183,6 +183,25 @@ async fn window_chrome(
     path: &std::path::Path,
     cx: &mut AsyncApp,
 ) -> anyhow::Result<()> {
+    let drag = bounds(view, handle, "reader-toolbar-drag", cx)?;
+    let copy = bounds(view, handle, "copy-markdown", cx)?;
+    let controls = bounds(view, handle, "window-minimize", cx)?;
+    std::fs::write(
+        path.join("toolbar-geometry.json"),
+        serde_json::json!({
+            "drag": {"x": f32::from(drag.left()), "width": f32::from(drag.size.width)},
+            "copy_right": f32::from(copy.right()), "controls_left": f32::from(controls.left())
+        })
+        .to_string(),
+    )?;
+    anyhow::ensure!(
+        drag.size.width >= px(24.),
+        "Reader drag strip collapsed: {drag:?}"
+    );
+    anyhow::ensure!(
+        copy.right() <= controls.left(),
+        "Reader actions overlap native window controls"
+    );
     for (name, expected) in [
         ("window-minimize", HTMINBUTTON),
         ("window-maximize", HTMAXBUTTON),

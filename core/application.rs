@@ -460,6 +460,17 @@ impl MailApplication {
                 .unwrap_or_default(),
         })
     }
+}
+
+// Both native clients commit grants through the same account credential lane.
+#[uniffi::export]
+impl MailApplication {
+    pub fn account_proxy_settings(
+        &self,
+        account_id: String,
+    ) -> Result<crate::AccountProxySettings> {
+        self.engine.account_proxy(&account_id)
+    }
     pub fn begin_google_login(
         &self,
         account: Account,
@@ -533,6 +544,9 @@ impl MailApplication {
             })
             .await
     }
+}
+
+impl MailApplication {
     pub fn new_offline(
         engine: Arc<MailEngine>,
         _platform: Arc<dyn PlatformServices>,
@@ -953,8 +967,8 @@ impl MailApplication {
         let platform = self.platform.clone();
         let key = format!("account:{id}");
         let encoded = serde_json::to_string(&refreshed).map_err(fail)?;
-        // GoogleLogin writes a new grant without this lock. Only replace the exact
-        // value that was refreshed, so a sign-in finishing meanwhile is kept.
+        // Every application grant writer holds this lane through persistence. The
+        // comparison also preserves externally replaced credentials.
         let newer = tokio::task::spawn_blocking(move || {
             let _guard = guard;
             let current = platform.read_secret(key.clone())?;

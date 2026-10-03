@@ -890,13 +890,20 @@ impl MailDesktop {
                     ),
             )
     }
-    fn reader_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn reader_panel(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Compact actions before the flexible drag strip can collapse under the
+        // reserved native controls. Keep full labels in the wider reading view.
+        let reader_width = f32::from(window.viewport_size().width)
+            - 218.
+            - if self.focus_reading { 0. } else { 365. };
+        let compact = reader_width < 600.;
         let selected = self.selected.is_some();
         let body_ready = self.body.is_some();
         let weak = cx.entity().downgrade();
         let starred = self.selected.as_ref().is_some_and(|m| m.starred);
         let unread = self.selected.as_ref().is_some_and(|m| m.unread);
         let more = Button::new("reader-more")
+            .when(compact, |button| button.w(px(28.)).p_0().flex_shrink_0())
             .icon(icon("more"))
             .ghost()
             .disabled(!selected)
@@ -949,6 +956,7 @@ impl MailDesktop {
                 .flex_shrink_0()
                 .px_5()
                 .pr(px(crate::window_chrome::RESERVE.max(20.)))
+                .when(compact, |bar| bar.pl(px(12.)).gap_1())
                 .when(self.focus_reading, |bar| {
                     bar.child(Button::new("back-list").label("返回列表").ghost().on_click(
                         cx.listener(|s, _, _, cx| {
@@ -961,6 +969,7 @@ impl MailDesktop {
                 .border_color(rgb(LINE))
                 .child(
                     Button::new("archive")
+                        .when(compact, |button| button.w(px(28.)).p_0().flex_shrink_0())
                         .icon(icon("archive"))
                         .tooltip("归档")
                         .ghost()
@@ -969,6 +978,7 @@ impl MailDesktop {
                 )
                 .child(
                     Button::new("trash")
+                        .when(compact, |button| button.w(px(28.)).p_0().flex_shrink_0())
                         .icon(icon("trash"))
                         .tooltip("移到垃圾箱")
                         .ghost()
@@ -979,6 +989,7 @@ impl MailDesktop {
                 .child(
                     div()
                         .id("reader-toolbar-drag")
+                        .min_w(px(24.))
                         .window_control_area(WindowControlArea::Drag)
                         .relative()
                         .flex_1()
@@ -990,10 +1001,23 @@ impl MailDesktop {
                         .icon(icon("language"))
                         .outline()
                         .text_size(px(12.))
-                        .label(if self.translating {
+                        .tooltip(if self.translating {
                             "取消翻译"
                         } else {
                             "全文翻译"
+                        })
+                        .accessibility_label(if self.translating {
+                            "取消翻译"
+                        } else {
+                            "全文翻译"
+                        })
+                        .when(compact, |button| button.w(px(28.)).p_0().flex_shrink_0())
+                        .when(!compact, |button| {
+                            button.label(if self.translating {
+                                "取消翻译"
+                            } else {
+                                "全文翻译"
+                            })
                         })
                         .disabled(!body_ready)
                         .on_click(cx.listener(|s, _, _, cx| {
@@ -1008,7 +1032,10 @@ impl MailDesktop {
                 .child(probe(
                     "copy-markdown",
                     Button::new("copy-markdown")
-                        .label("复制 Markdown")
+                        .tooltip("复制 Markdown")
+                        .accessibility_label("复制 Markdown")
+                        .when(compact, |button| button.w(px(28.)).p_0().flex_shrink_0())
+                        .when(!compact, |button| button.label("复制 Markdown"))
                         .icon(icon("copy"))
                         .text_size(px(12.))
                         .ghost()
@@ -2009,7 +2036,7 @@ impl Render for MailDesktop {
                 .flex_1()
                 .min_h_0()
                 .when(!self.focus_reading, |v| v.child(self.mail_list(cx)))
-                .child(self.reader_panel(cx))
+                .child(self.reader_panel(window, cx))
                 .into_any_element()
         };
         div()

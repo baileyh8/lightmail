@@ -760,8 +760,6 @@ public protocol GoogleLoginProtocol: AnyObject, Sendable {
 
     func authorizationUrl()  -> String
 
-    func finish(clientSecret: String) async throws
-
 }
 open class GoogleLogin: GoogleLoginProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -834,23 +832,6 @@ open func authorizationUrl() -> String  {
 })
 }
 
-open func finish(clientSecret: String)async throws   {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_lightmail_core_fn_method_googlelogin_finish(
-                    self.uniffiCloneHandle(),
-                    FfiConverterString.lower(clientSecret)
-                )
-            },
-            pollFunc: ffi_lightmail_core_rust_future_poll_void,
-            completeFunc: ffi_lightmail_core_rust_future_complete_void,
-            freeFunc: ffi_lightmail_core_rust_future_free_void,
-            liftFunc: { $0 },
-            errorHandler: FfiConverterTypeMailError_lift
-        )
-}
-
 
 
 }
@@ -903,6 +884,10 @@ public func FfiConverterTypeGoogleLogin_lower(_ value: GoogleLogin) -> UInt64 {
 
 public protocol MailApplicationProtocol: AnyObject, Sendable {
 
+    func accountProxySettings(accountId: String) throws  -> AccountProxySettings
+
+    func beginGoogleLogin(account: Account, clientId: String, proxy: AccountProxySettings) throws  -> GoogleLogin
+
     func body(messageId: String) async throws  -> MailBody
 
     func cachedTranslation(messageId: String, body: MailBody, configuration: TranslationConfiguration) throws  -> TranslationResult?
@@ -910,6 +895,8 @@ public protocol MailApplicationProtocol: AnyObject, Sendable {
     func cancelQueued(id: String) throws
 
     func download(messageId: String, partId: String, destination: String) async throws
+
+    func finishGoogleLogin(login: GoogleLogin, secret: String, proxy: AccountProxySettings) async throws
 
     func mark(messageId: String, flag: String, value: Bool) async throws
 
@@ -1010,6 +997,26 @@ public convenience init(engine: MailEngine, platform: PlatformServices, observer
 
 
 
+open func accountProxySettings(accountId: String)throws  -> AccountProxySettings  {
+    return try  FfiConverterTypeAccountProxySettings_lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_mailapplication_account_proxy_settings(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(accountId),$0
+    )
+})
+}
+
+open func beginGoogleLogin(account: Account, clientId: String, proxy: AccountProxySettings)throws  -> GoogleLogin  {
+    return try  FfiConverterTypeGoogleLogin_lift(try rustCallWithError(FfiConverterTypeMailError_lift) {
+    uniffi_lightmail_core_fn_method_mailapplication_begin_google_login(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeAccount_lower(account),
+        FfiConverterString.lower(clientId),
+        FfiConverterTypeAccountProxySettings_lower(proxy),$0
+    )
+})
+}
+
 open func body(messageId: String)async throws  -> MailBody  {
     return
         try  await uniffiRustCallAsync(
@@ -1053,6 +1060,23 @@ open func download(messageId: String, partId: String, destination: String)async 
                 uniffi_lightmail_core_fn_method_mailapplication_download(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(messageId),FfiConverterString.lower(partId),FfiConverterString.lower(destination)
+                )
+            },
+            pollFunc: ffi_lightmail_core_rust_future_poll_void,
+            completeFunc: ffi_lightmail_core_rust_future_complete_void,
+            freeFunc: ffi_lightmail_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMailError_lift
+        )
+}
+
+open func finishGoogleLogin(login: GoogleLogin, secret: String, proxy: AccountProxySettings)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_lightmail_core_fn_method_mailapplication_finish_google_login(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeGoogleLogin_lower(login),FfiConverterString.lower(secret),FfiConverterTypeAccountProxySettings_lower(proxy)
                 )
             },
             pollFunc: ffi_lightmail_core_rust_future_poll_void,
@@ -2661,6 +2685,64 @@ public func FfiConverterTypeAccount_lower(_ value: Account) -> RustBuffer {
 }
 
 
+public struct AccountProxySettings: Equatable, Hashable {
+    public var mode: AccountProxyMode
+    public var host: String
+    public var port: UInt16
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(mode: AccountProxyMode, host: String, port: UInt16) {
+        self.mode = mode
+        self.host = host
+        self.port = port
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AccountProxySettings: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAccountProxySettings: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AccountProxySettings {
+        return
+            try AccountProxySettings(
+                mode: FfiConverterTypeAccountProxyMode.read(from: &buf),
+                host: FfiConverterString.read(from: &buf),
+                port: FfiConverterUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AccountProxySettings, into buf: inout [UInt8]) {
+        FfiConverterTypeAccountProxyMode.write(value.mode, into: &buf)
+        FfiConverterString.write(value.host, into: &buf)
+        FfiConverterUInt16.write(value.port, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAccountProxySettings_lift(_ buf: RustBuffer) throws -> AccountProxySettings {
+    return try FfiConverterTypeAccountProxySettings.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAccountProxySettings_lower(_ value: AccountProxySettings) -> RustBuffer {
+    return FfiConverterTypeAccountProxySettings.lower(value)
+}
+
+
 public struct ApplicationEvent: Equatable, Hashable {
     public var kind: ApplicationEventKind
     public var accountId: String
@@ -3695,6 +3777,87 @@ public func FfiConverterTypeTranslationResult_lower(_ value: TranslationResult) 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
+public enum AccountProxyMode: Equatable, Hashable {
+
+    case system
+    case direct
+    case http
+    case socks5
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AccountProxyMode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAccountProxyMode: FfiConverterRustBuffer {
+    typealias SwiftType = AccountProxyMode
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AccountProxyMode {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .system
+
+        case 2: return .direct
+
+        case 3: return .http
+
+        case 4: return .socks5
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AccountProxyMode, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .system:
+            writeInt(&buf, Int32(1))
+
+
+        case .direct:
+            writeInt(&buf, Int32(2))
+
+
+        case .http:
+            writeInt(&buf, Int32(3))
+
+
+        case .socks5:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAccountProxyMode_lift(_ buf: RustBuffer) throws -> AccountProxyMode {
+    return try FfiConverterTypeAccountProxyMode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAccountProxyMode_lower(_ value: AccountProxyMode) -> RustBuffer {
+    return FfiConverterTypeAccountProxyMode.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 public enum ApplicationEventKind: Equatable, Hashable {
 
     case dataChanged
@@ -4509,6 +4672,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_lightmail_core_checksum_method_applicationobserver_changed() != 42479) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_account_proxy_settings() != 4319) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_begin_google_login() != 33108) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_lightmail_core_checksum_method_mailapplication_body() != 11386) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -4519,6 +4688,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_lightmail_core_checksum_method_mailapplication_download() != 25861) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_lightmail_core_checksum_method_mailapplication_finish_google_login() != 20242) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_lightmail_core_checksum_method_mailapplication_mark() != 24560) {
@@ -4570,9 +4742,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_lightmail_core_checksum_method_googlelogin_authorization_url() != 5215) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_lightmail_core_checksum_method_googlelogin_finish() != 3271) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_lightmail_core_checksum_method_platformservices_read_secret() != 15195) {

@@ -550,7 +550,7 @@ fn oauth_callback_exchange_and_identity_mismatch() {
                 "{}?state={}&code=synthetic-code",
                 params["redirect_uri"], params["state"]
             );
-            let task = tokio::spawn(login.finish(String::new()));
+            let task = tokio::spawn(login.exchange(String::new()));
             let result = reqwest::Client::builder()
                 .no_proxy()
                 .build()
@@ -566,7 +566,8 @@ fn oauth_callback_exchange_and_identity_mismatch() {
                     .read_secret("account:demo-work".into())
                     .unwrap()
                     .is_some(),
-                matches
+                false,
+                "exchange must not persist credentials outside the application transaction"
             );
             let observed = server.requests.lock().unwrap();
             assert_eq!(observed.len(), 2);
@@ -619,12 +620,14 @@ fn account_proxy_covers_google_code_identity_refresh_and_keeps_loopback_local() 
         };
         let proxied = real_account("proxied", "gmail", "oauth");
         let direct = real_account("direct", "gmail", "oauth");
-        let mut login = GoogleLogin::new(proxied.clone(), "synthetic-client".into(), policy.clone().scoped_platform(platform.clone()).unwrap()).unwrap();
+        let mut app = MailApplication::new(engine.clone(), platform.clone(), Arc::new(Events::default()));
+        Arc::get_mut(&mut app).unwrap().oauth_endpoints = origin.endpoints();
+        let mut login = app.begin_google_login(proxied.clone(), "synthetic-client".into(), policy.clone()).unwrap();
         Arc::get_mut(&mut login).unwrap().endpoints = origin.endpoints();
         let url = url::Url::parse(&login.authorization_url()).unwrap();
         let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
         let callback = format!("{}?state={}&code=synthetic-code", query["redirect_uri"], query["state"]);
-        let finished = tokio::spawn(login.finish(String::new()));
+        let finished = tokio::spawn(app.clone().finish_google_login(login, String::new(), policy.clone()));
         assert!(reqwest::Client::builder().no_proxy().build().unwrap().get(&callback).send().await.unwrap().status().is_success());
         finished.await.unwrap().unwrap();
         assert_eq!(proxy.requests.lock().unwrap().len(), 2);
@@ -635,8 +638,6 @@ fn account_proxy_covers_google_code_identity_refresh_and_keeps_loopback_local() 
         }
         assert!(platform.read_secret("account:proxied".into()).unwrap().is_some());
 
-        let mut app = MailApplication::new(engine.clone(), platform.clone(), Arc::new(Events::default()));
-        Arc::get_mut(&mut app).unwrap().oauth_endpoints = origin.endpoints();
         app.clone().save_account_with_proxy(proxied.clone(), String::new(), policy).await.unwrap();
         app.clone().save_account_with_proxy(direct.clone(), String::new(), AccountProxySettings { mode: AccountProxyMode::Direct, ..Default::default() }).await.unwrap();
         engine.set_setting("google-client-id".into(), "synthetic-client".into()).unwrap();
@@ -1190,4 +1191,145 @@ fn delivery_unknown_is_settled_by_the_user_without_resending() {
     assert!(DraftState::parse("queued").unwrap().withdrawable());
     assert!(DraftState::parse("failed").unwrap().retryable());
     assert!(!DraftState::parse("sending").unwrap().deletable());
+}
+
+#[test]
+fn google_reauthorization_rejects_changed_identity_before_starting_login() {
+    let (_dir, engine, app, platform, _) = fixture();
+    let original = real_account("reauthorize", "gmail", "oauth");
+    engine.save_account(original.clone()).unwrap();
+    platform
+        .write_secret("account:reauthorize".into(), "original-grant".into())
+        .unwrap();
+    for change in 0..4 {
+        let mut edited = original.clone();
+        match change {
+            0 => edited.address = "different@example.com".into(),
+            1 => edited.provider = "custom".into(),
+            2 => edited.imap_host = "other.example.com".into(),
+            _ => edited.imap_port = 1993,
+        }
+        assert!(app
+            .begin_google_login(edited, "client".into(), AccountProxySettings::default())
+            .is_err());
+        assert_eq!(
+            platform
+                .read_secret("account:reauthorize".into())
+                .unwrap()
+                .as_deref(),
+            Some("original-grant")
+        );
+        assert_eq!(
+            engine.account("reauthorize").unwrap().address,
+            original.address
+        );
+    }
+}
+
+#[test]
+fn google_signin_waits_for_refresh_writeback_then_preserves_the_new_grant() {
+    struct PausedRead {
+        inner: TestPlatform,
+        reads: std::sync::atomic::AtomicUsize,
+        captured: tokio::sync::Notify,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl PlatformServices for PausedRead {
+        fn read_secret(&self, key: String) -> Result<Option<String>> {
+            let value = self.inner.read_secret(key.clone())?;
+            if key == "account:serialized"
+                && self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+            {
+                // Freeze after the refresh's comparison read, before its write.
+                self.captured.notify_one();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("test must release refresh");
+            }
+            Ok(value)
+        }
+        fn write_secret(&self, key: String, value: String) -> Result<()> {
+            self.inner.write_secret(key, value)
+        }
+        fn remove_secret(&self, key: String) -> Result<()> {
+            self.inner.remove_secret(key)
+        }
+        fn proxy_for(&self, host: String) -> Result<ProxyRoute> {
+            self.inner.proxy_for(host)
+        }
+    }
+    crate::platform::runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = MailEngine::new(dir.path().to_string_lossy().into()).unwrap();
+        let account = real_account("serialized", "gmail", "oauth");
+        engine.save_account(account.clone()).unwrap();
+        engine
+            .set_setting("google-client-id".into(), "refresh-client".into())
+            .unwrap();
+        let (release, receiver) = std::sync::mpsc::channel();
+        let platform = Arc::new(PausedRead {
+            inner: TestPlatform::default(),
+            reads: Default::default(),
+            captured: Default::default(),
+            release: Mutex::new(receiver),
+        });
+        let expired =
+            serde_json::json!({"accessToken":"expired","refreshToken":"old-grant","expiresAt":0})
+                .to_string();
+        platform
+            .inner
+            .write_secret("account:serialized".into(), expired.clone())
+            .unwrap();
+        let refresh_server = OAuthFixture::new("unused", false);
+        let mut app = MailApplication::new(engine, platform.clone(), Arc::new(Events::default()));
+        Arc::get_mut(&mut app).unwrap().oauth_endpoints = refresh_server.endpoints();
+        let refreshing = {
+            let app = app.clone();
+            tokio::spawn(async move { app.credential("serialized").await })
+        };
+        tokio::time::timeout(Duration::from_secs(5), platform.captured.notified())
+            .await
+            .unwrap();
+        let login_server = Arc::new(OAuthFixture::new(&account.address, false));
+        let signing_in = {
+            let server = login_server.clone();
+            let app = app.clone();
+            tokio::spawn(async move {
+                complete_google_fixture(app, account, &server, "new-signin-client").await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while login_server.requests.lock().unwrap().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !signing_in.is_finished(),
+            "sign-in commit must wait behind the refresh lane"
+        );
+        assert_eq!(
+            platform
+                .inner
+                .read_secret("account:serialized".into())
+                .unwrap()
+                .unwrap(),
+            expired
+        );
+        release.send(()).unwrap();
+        refreshing.await.unwrap().unwrap();
+        signing_in.await.unwrap().unwrap();
+        let final_token: crate::auth::GoogleTokens = serde_json::from_str(
+            &platform
+                .inner
+                .read_secret("account:serialized".into())
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(final_token.client.unwrap().client_id, "new-signin-client");
+    });
 }

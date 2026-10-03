@@ -139,19 +139,6 @@ impl GoogleLogin {
         ]);
         url.into()
     }
-    pub async fn finish(self: Arc<Self>, client_secret: String) -> Result<()> {
-        let platform = self.platform.clone();
-        let grant = self.exchange(client_secret).await?;
-        run(async move {
-            secret_write(
-                platform,
-                format!("account:{}", grant.account.id),
-                serde_json::to_string(&grant.token).map_err(fail)?,
-            )
-            .await
-        })
-        .await
-    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]

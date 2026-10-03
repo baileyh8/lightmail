@@ -385,13 +385,13 @@ struct AccountEditor: View {
       if authKind == "oauth" && (account == nil || forceLogin) {
         status = "请在浏览器中完成 Google 授权…"
         try await GoogleOAuth.signIn(
-          account: a, clientID: store.googleClientID,
+          application: store.application, account: a, clientID: store.googleClientID,
           clientSecret: try await SecretStore.read("google-client-secret") ?? "")
+        await store.reload()
+        store.beginMonitoring()
+      } else {
+        try await store.saveAccount(a, password: password)
       }
-      if authKind != "oauth" && password.isEmpty && account == nil {
-        throw MailAppError.message("请填写客户端授权码")
-      }
-      try await store.saveAccount(a, password: password)
       password = ""
       store.finishAccountSetup(a)
     } catch { status = userError(error) }
