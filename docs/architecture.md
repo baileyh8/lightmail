@@ -82,9 +82,7 @@ Windows 客户端统一经 `gpui-kit =0.7.0` 使用 GPUI 与组件库。`desktop
 
 `tray.rs` 管理 Windows 托盘、窗口图标、恢复已有实例与退出生命周期。关闭窗口隐藏到托盘；退出时保存草稿并停止服务。托盘立即收信调用 `MailApplication::refresh`；自动收信开关调用 Rust-only 的 `set_automatic_receiving`，只停后台监控/预加载，不取消手动命令和发送队列。Windows 偏好存于 `windows-automatic-receiving`，Mac 调用与默认行为不变。
 
-原文默认使用简化 HTML（没有 HTML 时回退 Markdown）。Kit TextView 不提供完整 CSS 和复杂邮件表格布局，不能称为原样排版；已知限制与不使用 WebView 的后续方案见 [Windows HTML 阅读器](windows-html-reader.md)。
-
-Windows 原文 HTML 的第一版实验接入 `blitz-dom` / `blitz-html` / `blitz-paint`，GPUI 继续负责窗口和滚动宿主；Blitz shell、Winit 和 WebView 都不进入客户端。图片权限通过核心 `fetch_resource` 进入 Blitz `NetProvider`，默认阻止，用户点击「显示外部图片」后才允许当前正文的网页资源。当前绘制结果仍是有界整封图片，选区、链接命中和后台渲染属于后续阶段。
+原文默认使用 Blitz HTML/CSS，没有 HTML 时回退 Markdown。DOM、布局与图片下载在后台工作；GPUI 接收有界视口图像、链接命中和可访问文本元数据，负责滚动、选择与复制。没有引入 Blitz shell、Winit 或 WebView；完整浏览器 CSS 兼容性仍不作保证。早期 Kit TextView HTML 调研保留在 [阅读器记录](windows-html-reader.md)。
 
 阅读器使用 Blitz 绘制原文 HTML/CSS 的有界视口区域，Kit TextView 承载 Markdown、译文及双语文本；没有脚本引擎。图片默认禁止请求，用户对当前邮件允许后，通过核心与该邮箱的代理范围下载，保持同源重定向及数量、压缩缓存、解码像素预算；切换邮件或保存账号淘汰旧请求与结果。详见 [原生阅读器](windows-blitz-viewport-accessibility.md)。正文 http、https 和 mailto 链接经二次确认后交给系统应用，支持复制完整网址，见 [链接确认](windows-mail-link-confirmation.md)。两端正文、安全策略与导出调用共享 `presentation.rs` / `composition.rs`。
 

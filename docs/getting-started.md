@@ -5,7 +5,7 @@
 从 [Releases](https://github.com/baileyh8/lightmail/releases) 获取对应平台的预览包：
 
 - **macOS 15+ / Apple Silicon**：解压后将 `轻邮.app` 放入 Applications。
-- **Windows 10 1809+ / Windows 11 x64**：运行 `windows-x64-setup.exe`，或解压便携 ZIP 后运行 `Lightmail.exe`。需要 Microsoft Edge WebView2 Runtime；安装包尚未代码签名。
+- **Windows 10 1809+ / Windows 11 x64**：运行 Windows 安装程序，或解压便携 ZIP 后运行 `Lightmail.exe`。客户端使用 GPUI Kit + Blitz，不需要 WebView2；安装包尚未代码签名。Windows 实现与尚待人工验收的项目见 [整改记录](windows-review-fixes-20261003.md)，发布下载以 Releases 实际附件为准。
 
 首次启动可选择「体验示例」；示例与真实邮箱使用独立数据库，不会发送邮件。macOS 也可以在「设置 → 存储 → 打开示例预览」进入演示。
 

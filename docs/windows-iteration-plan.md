@@ -3,8 +3,8 @@
 | 项 | 内容 |
 | --- | --- |
 | 基线 | 上游 `baileyh8/lightmail` `5ab113a`（v0.0.4 标签之后，已合并 PR #1 共享服务和 PR #2 钥匙串授权修复） |
-| 分支 | `feat/windows-gpui-kit`（本地分支，不推送） |
-| 日期 | 2026-09-29 |
+| 分支 | `fix/windows-review-blockers`（包含 Windows 全部迭代，用户已授权推送 fork 并提交 upstream PR） |
+| 日期 | 初版 2026-09-29，当前状态更新于 2026-10-03 |
 | 前序工作 | fork 上旧的 `wip/windows-support` 已删除，其代码不迁移 |
 
 ## 1. 目标与约束
@@ -13,7 +13,7 @@
 
 - **界面**：统一经 `gpui-kit =0.7.0` 使用 GPUI（`gpui-pre 0.3.7`）和组件库（`gpui-component 0.7.0`），不再直接依赖 `gpui 0.2.2`、`gpui-component 0.5.1`。
 - **不使用 WebView**：移除 `wry`、WebView2 宿主和 vendored 的 `third_party/gpui`。那份补丁只是为了让 WebView2 子窗口显示在 GPUI 绘制层之上，去掉 WebView 后就不需要了。
-- **阅读器**：用 Kit 的 `TextView` 原生渲染 Markdown 和受限 HTML。默认不发出任何远程资源请求；链接只允许 http、https、mailto，并交给系统打开。
+- **阅读器**：用 Blitz 在后台布局 HTML/CSS 并绘制有界视口，Kit `TextView` 承载 Markdown、译文与双语。默认不发出远程资源请求；http、https、mailto 链接经二次确认交给系统打开，支持复制完整网址。
 - **凭证**：沿用上游的 Windows Credential Manager（`keyring`）。超过单条凭据上限的值自动分片保存。
 
 边界约定：
@@ -246,5 +246,5 @@ flowchart LR
 ## 6. 约定
 
 - 每个迭代拆成若干提交，使用 `fix:`、`feat:`、`docs:` 前缀。提交前运行 `cargo fmt`、`cargo test --locked --lib`；改到 Windows 的还要运行 `cargo test -p lightmail-desktop`；改到协议或发件的运行 `python scripts/check.py --protocols-only`。
-- 不推送到任何远端。
+- 推送与 PR 按用户授权执行；此前不推送的阶段记录保留为历史验证状态。
 - 不提交真实凭证、真实邮件或账号数据库；测试只用虚构数据。

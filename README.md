@@ -42,7 +42,7 @@
 
 **需要 Apple Silicon Mac 和 macOS 15+。** 从 [Releases](https://github.com/baileyh8/lightmail/releases/tag/v0.0.4) 下载 ZIP，解压并将 `轻邮.app` 放入 Applications。运行应用不需要额外安装 Node、Python 或 Rust。
 
-**Windows 10 / 11 x64**：下载 `windows-x64-setup.exe` 按用户安装，或解压 `windows-x64.zip` 直接运行 `Lightmail.exe`。需要 Microsoft Edge WebView2 Runtime；安装包尚未代码签名。卸载保留邮件、草稿与设置。
+**Windows 10 1809+ / Windows 11 x64**：使用 Windows 安装程序按用户安装，或解压便携 ZIP 后直接运行 `Lightmail.exe`。客户端使用 GPUI Kit + Blitz 原生界面与 HTML/CSS 阅读器，运行不需要 WebView2。安装包尚未代码签名，卸载保留邮件、草稿与设置。当前实现与验收边界见 [Windows 整改记录](docs/windows-review-fixes-20261003.md)，正式发布的 Windows 下载以 Releases 实际附件为准。
 
 > 这是早期预览版，当前使用 ad-hoc 签名，尚未做 Apple Developer ID 公证。macOS 可能阻止首次打开；请核对下载来源和 SHA-256，或选择从源码构建。Intel 尚未验证。
 
