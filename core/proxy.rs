@@ -1,6 +1,14 @@
-use crate::models::{fail, Result};
+use crate::{
+    models::{fail, Result},
+    PlatformServices, ProxyRoute,
+};
 use futures_util::{stream::FuturesUnordered, StreamExt};
-use std::{collections::HashMap, net::SocketAddr, sync::Mutex, time::Duration};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -11,6 +19,25 @@ pub struct Proxy {
     pub kind: String,
     pub host: String,
     pub port: u16,
+}
+impl Proxy {
+    pub(crate) fn from_route(route: ProxyRoute) -> Result<Option<Self>> {
+        if route.kind == "direct" {
+            return Ok(None);
+        }
+        if !["http", "socks5"].contains(&route.kind.as_str())
+            || route.host.is_empty()
+            || route.host.chars().any(char::is_whitespace)
+            || route.port == 0
+        {
+            return Err(fail("代理配置无效"));
+        }
+        Ok(Some(Self {
+            kind: route.kind,
+            host: route.host,
+            port: route.port,
+        }))
+    }
 }
 
 // Race address families with a short stagger. Sequential hostname dialing can
@@ -75,10 +102,27 @@ where
 }
 
 #[derive(Default)]
-pub struct Routes(Mutex<HashMap<String, Proxy>>);
+pub struct Routes {
+    routes: Mutex<HashMap<String, Proxy>>,
+    platform: Mutex<Option<Arc<dyn PlatformServices>>>,
+}
 impl Routes {
+    pub(crate) fn set_platform(&self, platform: Arc<dyn PlatformServices>) {
+        *self.platform.lock().unwrap() = Some(platform);
+    }
+    pub(crate) fn resolve(&self, destination: &str) -> Result<Option<ProxyRoute>> {
+        let platform = self.platform.lock().unwrap().clone();
+        if let Some(platform) = platform {
+            return platform.proxy_for(destination.to_owned()).map(Some);
+        }
+        Ok(self.get(destination).map(|proxy| ProxyRoute {
+            kind: proxy.kind,
+            host: proxy.host,
+            port: proxy.port,
+        }))
+    }
     pub fn get(&self, destination: &str) -> Option<Proxy> {
-        self.0
+        self.routes
             .lock()
             .expect("proxy routes lock")
             .get(destination)
@@ -96,11 +140,11 @@ impl Routes {
                 || host.chars().any(char::is_whitespace)
                 || port == 0
             {
-                return Err(fail("系统代理配置无效"));
+                return Err(fail("代理配置无效"));
             }
             Some(Proxy { kind, host, port })
         };
-        let mut routes = self.0.lock().map_err(|_| fail("无法更新系统代理"))?;
+        let mut routes = self.routes.lock().map_err(|_| fail("无法更新代理"))?;
         if routes.get(&destination) == next.as_ref() {
             return Ok(false);
         }
@@ -125,14 +169,14 @@ pub async fn connect(host: &str, port: u16, proxy: Option<&Proxy>) -> Result<Tcp
     };
     let mut stream = tcp_connect(proxy.host.as_str(), proxy.port)
         .await
-        .map_err(|_| fail("无法连接系统代理，请检查代理是否运行"))?;
-    let tunnel_error = |_| fail("系统代理连接中断，请检查网络");
+        .map_err(|_| fail("无法连接代理，请检查代理是否运行"))?;
+    let tunnel_error = |_| fail("代理连接中断，请检查网络");
     if proxy.kind == "socks5" {
         stream.write_all(&[5, 1, 0]).await.map_err(tunnel_error)?;
         let mut reply = [0; 2];
         stream.read_exact(&mut reply).await.map_err(tunnel_error)?;
         if reply != [5, 0] {
-            return Err(fail("系统 SOCKS 代理要求认证或不支持匿名连接"));
+            return Err(fail("SOCKS 代理要求认证或不支持匿名连接"));
         }
         let length = u8::try_from(host.len()).map_err(|_| fail("邮件服务器域名过长"))?;
         let mut request = vec![5, 1, 0, 3, length];
@@ -142,13 +186,13 @@ pub async fn connect(host: &str, port: u16, proxy: Option<&Proxy>) -> Result<Tcp
         let mut header = [0; 4];
         stream.read_exact(&mut header).await.map_err(tunnel_error)?;
         if header[0] != 5 || header[1] != 0 || header[2] != 0 {
-            return Err(fail("系统 SOCKS 代理拒绝邮件连接，请检查代理规则"));
+            return Err(fail("SOCKS 代理拒绝邮件连接，请检查代理规则"));
         }
         let size = match header[3] {
             1 => 4,
             4 => 16,
             3 => stream.read_u8().await.map_err(tunnel_error)? as usize,
-            _ => return Err(fail("系统 SOCKS 代理响应无效")),
+            _ => return Err(fail("SOCKS 代理响应无效")),
         };
         stream
             .read_exact(&mut vec![0; size + 2])
@@ -168,18 +212,18 @@ pub async fn connect(host: &str, port: u16, proxy: Option<&Proxy>) -> Result<Tcp
         // Do not buffer beyond the header: SMTP may send its greeting immediately.
         while !header.ends_with(b"\r\n\r\n") {
             if header.len() >= 16 * 1024 {
-                return Err(fail("系统 HTTP 代理响应过长"));
+                return Err(fail("HTTP 代理响应过长"));
             }
             header.push(stream.read_u8().await.map_err(tunnel_error)?);
         }
         let line = std::str::from_utf8(&header)
-            .map_err(|_| fail("系统 HTTP 代理响应无效"))?
+            .map_err(|_| fail("HTTP 代理响应无效"))?
             .lines()
             .next()
             .unwrap_or("");
         let mut fields = line.split_whitespace();
         if !matches!(fields.next(), Some("HTTP/1.0" | "HTTP/1.1")) || fields.next() != Some("200") {
-            return Err(fail("系统 HTTP 代理拒绝邮件连接，请检查代理规则或认证"));
+            return Err(fail("HTTP 代理拒绝邮件连接，请检查代理规则或认证"));
         }
     }
     Ok(stream)
@@ -196,7 +240,7 @@ impl SmtpTunnel {
         let mut upstream =
             tokio::time::timeout(Duration::from_secs(20), connect(host, port, Some(proxy)))
                 .await
-                .map_err(|_| fail("系统代理连接发件服务器超时"))??;
+                .map_err(|_| fail("代理连接发件服务器超时"))??;
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .map_err(|_| fail("无法创建本机发件连接"))?;
@@ -263,37 +307,66 @@ mod diagnostics {
     #[test]
     #[ignore = "explicit, no-auth live TLS diagnostic only"]
     fn live_mail_proxy_tls() {
+        use lettre::{
+            transport::smtp::{
+                client::{Tls, TlsParameters},
+                extension::ClientId,
+            },
+            AsyncSmtpTransport, Tokio1Executor,
+        };
+        use tokio::io::AsyncReadExt;
         let port: u16 = std::env::var("LIGHTMAIL_DIAGNOSTIC_PROXY_PORT")
             .expect("explicit proxy port")
             .parse()
             .unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
+        let records = rt.block_on(async {
+            let mut records = Vec::new();
             for kind in ["http", "socks5"] {
-                for (host, target_port) in [("imap.gmail.com", 993), ("smtp.gmail.com", 465)] {
-                    let proxy = super::Proxy {
-                        kind: kind.into(),
-                        host: "127.0.0.1".into(),
-                        port,
-                    };
+                for (host, target_port) in [("imap.gmail.com", 993), ("smtp.gmail.com", 465), ("smtp.gmail.com", 587)] {
+                    let proxy = super::Proxy { kind: kind.into(), host: "127.0.0.1".into(), port };
+                    let started = std::time::Instant::now();
                     let check = async {
-                        let tcp = super::connect(host, target_port, Some(&proxy))
-                            .await
-                            .unwrap();
-                        let mut builder = native_tls::TlsConnector::builder();
-                        builder.min_protocol_version(Some(native_tls::Protocol::Tlsv12));
-                        let tls = tokio_native_tls::TlsConnector::from(builder.build().unwrap());
-                        tls.connect(host, tcp)
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| e.to_string())
+                        if target_port == 993 {
+                            let tcp = super::connect(host, target_port, Some(&proxy)).await.map_err(|_| "proxy tunnel failed")?;
+                            let mut builder = native_tls::TlsConnector::builder();
+                            builder.min_protocol_version(Some(native_tls::Protocol::Tlsv12));
+                            let tls = tokio_native_tls::TlsConnector::from(builder.build().map_err(|_| "TLS setup failed")?);
+                            let mut stream = tls.connect(host, tcp).await.map_err(|_| "TLS validation failed")?;
+                            let mut greeting = [0; 1024];
+                            let read = stream.read(&mut greeting).await.map_err(|_| "server greeting failed")?;
+                            if !greeting[..read].starts_with(b"* OK") { return Err("unexpected IMAP greeting"); }
+                        } else {
+                            let tunnel = super::SmtpTunnel::open(host, target_port, &proxy).await.map_err(|_| "SMTP proxy tunnel failed")?;
+                            let tls = TlsParameters::new(host.into()).map_err(|_| "TLS setup failed")?;
+                            let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
+                                .port(tunnel.port).hello_name(ClientId::Domain("lightmail-diagnostic.invalid".into()))
+                                .tls(if target_port == 465 { Tls::Wrapper(tls) } else { Tls::Required(tls) })
+                                .timeout(Some(std::time::Duration::from_secs(12))).build::<Tokio1Executor>();
+                            // No credentials, AUTH, MAIL FROM, RCPT TO or DATA.
+                            if !transport.test_connection().await.map_err(|_| "SMTP TLS or NOOP failed")? { return Err("SMTP NOOP rejected"); }
+                        }
+                        Ok::<_, &str>(())
                     };
-                    println!(
-                        "{kind} {host}:{target_port} {:?}",
-                        tokio::time::timeout(std::time::Duration::from_secs(15), check).await
-                    );
+                    let result = tokio::time::timeout(std::time::Duration::from_secs(20), check).await;
+                    let error = match result { Ok(Ok(())) => None, Ok(Err(error)) => Some(error), Err(_) => Some("timeout") };
+                    let row = serde_json::json!({"kind":kind,"proxy":"127.0.0.1","proxyPort":port,"host":host,"port":target_port,"passed":error.is_none(),"error":error,"elapsedMs":started.elapsed().as_millis()});
+                    println!("{row}"); records.push(row);
                 }
             }
+            records
         });
+        if let Ok(directory) = std::env::var("LIGHTMAIL_DIAGNOSTIC_REPORT_DIR") {
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                std::path::Path::new(&directory).join("mail-tls.json"),
+                serde_json::to_vec_pretty(&records).unwrap(),
+            )
+            .unwrap();
+        }
+        assert!(
+            records.iter().all(|row| row["passed"] == true),
+            "live mail proxy diagnostic failed"
+        );
     }
 }

@@ -1,3 +1,4 @@
+mod account_proxy;
 mod application;
 mod auth;
 mod cache;
@@ -12,8 +13,9 @@ mod proxy;
 mod store;
 mod translation;
 mod transport;
+pub use account_proxy::*;
 pub use application::*;
-pub use auth::GoogleLogin;
+pub use auth::{GoogleClientConfiguration, GoogleGrant, GoogleLogin};
 pub use composition::*;
 pub use models::*;
 pub use platform::*;

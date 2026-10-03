@@ -75,7 +75,7 @@ def check_protocols(native):
             for kind in ("direct", "socks5", "http"):
                 ports = temp / f"mail-{kind}.json"
                 mail = subprocess.Popen([sys.executable, "tests/mail_fixture.py", "--cert", str(cert),
-                                         "--key", str(key), "--ports-file", str(ports)], cwd=ROOT)
+                                         "--key", str(key), "--ports-file", str(ports), "--inline-images"], cwd=ROOT)
                 try:
                     wait_file(ports, mail)
                     env = dict(os.environ, LIGHTMAIL_TEST_CA=str(cert), LIGHTMAIL_TEST_PORTS=str(ports), LIGHTMAIL_PROXY_KIND=kind)

@@ -1,0 +1,11 @@
+<!doctype html><html><head><style>
+@import url("https://example.invalid/remote.css");
+body {margin:0;font:16px sans-serif}
+.picture {width:120px;height:48px;background-image:url("https://example.invalid/background.png")}
+</style></head><body>
+<p>Untrusted resources remain callbacks, never automatic network I/O.</p>
+<img src="https://example.invalid/image.png" width="80" height="32">
+<img src="file:///C:/private.png" width="80" height="32">
+<div class="picture">Blocked background</div>
+<p>Tail content remains readable.</p>
+</body></html>

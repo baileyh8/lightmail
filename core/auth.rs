@@ -32,6 +32,8 @@ pub(crate) struct GoogleTokens {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<GoogleClientConfiguration>,
 }
 
 pub(crate) async fn token_request(
@@ -65,6 +67,7 @@ pub(crate) async fn token_request(
         access_token: access.into(),
         refresh_token: refresh.into(),
         expires_at: now() as f64 + value["expires_in"].as_f64().unwrap_or(3600.0),
+        client: None,
     })
 }
 
@@ -72,7 +75,7 @@ pub(crate) async fn token_request(
 pub struct GoogleLogin {
     pub(crate) endpoints: Endpoints,
     platform: Arc<dyn PlatformServices>,
-    account: Account,
+    pub(crate) account: Account,
     client_id: String,
     state: String,
     verifier: String,
@@ -136,7 +139,23 @@ impl GoogleLogin {
         ]);
         url.into()
     }
-    pub async fn finish(self: Arc<Self>, client_secret: String) -> Result<()> {
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoogleClientConfiguration {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+/// Verified but uncommitted authorization. Tokens never pass through the UI.
+pub struct GoogleGrant {
+    pub(crate) account: Account,
+    pub(crate) token: GoogleTokens,
+}
+
+impl GoogleLogin {
+    pub async fn exchange(self: Arc<Self>, client_secret: String) -> Result<GoogleGrant> {
         run(async move {
             let listener = self
                 .listener
@@ -159,10 +178,15 @@ impl GoogleLogin {
                 ("grant_type", "authorization_code".into()),
                 ("code_verifier", self.verifier.clone()),
             ];
+            let configuration = GoogleClientConfiguration {
+                client_id: self.client_id.clone(),
+                client_secret: client_secret.clone(),
+            };
             if !client_secret.is_empty() {
                 fields.push(("client_secret", client_secret));
             }
-            let token = token_request(self.platform.as_ref(), fields, "", &self.endpoints).await?;
+            let mut token =
+                token_request(self.platform.as_ref(), fields, "", &self.endpoints).await?;
             let endpoint = self.endpoints.identity.as_str();
             let response = http_client(self.platform.as_ref(), endpoint, 20)?
                 .get(endpoint)
@@ -182,12 +206,11 @@ impl GoogleLogin {
             {
                 return Err(fail("Google 授权账号与填写的邮箱不一致，请选择对应账号"));
             }
-            secret_write(
-                self.platform.clone(),
-                format!("account:{}", self.account.id),
-                serde_json::to_string(&token).map_err(fail)?,
-            )
-            .await
+            token.client = Some(configuration);
+            Ok(GoogleGrant {
+                account: self.account.clone(),
+                token,
+            })
         })
         .await
     }

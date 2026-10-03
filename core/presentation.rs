@@ -28,10 +28,82 @@ pub fn provider_preset(provider: String) -> ProviderPreset {
     }
 }
 
+/// Default account colors, matching the existing macOS settings screen.
+pub fn provider_color(provider: &str) -> &'static str {
+    match provider {
+        "gmail" => "#226451",
+        "163" => "#BC795F",
+        "qq" => "#C19944",
+        _ => "#6687B7",
+    }
+}
+
+/// Input for native readers that render Markdown or restricted HTML without a
+/// browser document. Translation validation and block pairing stay in the core.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReaderContent {
+    Markdown(String),
+    /// Already sanitized and size-bounded when the body was converted.
+    Html(String),
+    /// Source and translated Markdown for each translation block.
+    Bilingual(Vec<(String, String)>),
+}
+
+pub fn reader_content(
+    body: &MailBody,
+    translation: Option<&TranslationResult>,
+    mode: ExportMode,
+    rich: bool,
+) -> Result<ReaderContent> {
+    match mode {
+        ExportMode::Original => {
+            if rich && !body.html.is_empty() {
+                return Ok(ReaderContent::Html(body.html.clone()));
+            }
+            let markdown = if body.markdown.trim().is_empty() {
+                &body.text
+            } else {
+                &body.markdown
+            };
+            markdown_budget(markdown)?;
+            Ok(ReaderContent::Markdown(markdown.clone()))
+        }
+        ExportMode::Translated => {
+            let t = translation.ok_or_else(|| fail("译文尚未完成"))?;
+            crate::composition::validate_translation(body, t)?;
+            let markdown = translation_markdown(t.clone());
+            markdown_budget(&markdown)?;
+            Ok(ReaderContent::Markdown(markdown))
+        }
+        ExportMode::Bilingual => {
+            let t = translation.ok_or_else(|| fail("译文尚未完成"))?;
+            crate::composition::validate_translation(body, t)?;
+            let mut size = 0usize;
+            let mut pairs = Vec::new();
+            for block in translation_blocks(body.markdown.clone()) {
+                let target = t
+                    .blocks
+                    .iter()
+                    .find(|b| b.id == block.id)
+                    .map(|b| b.text.clone())
+                    .unwrap_or_default();
+                markdown_budget(&block.text)?;
+                markdown_budget(&target)?;
+                size = size.saturating_add(block.text.len() + target.len());
+                if size > 8 * 1024 * 1024 {
+                    return Err(fail("双语正文超过显示上限"));
+                }
+                pairs.push((block.text, target));
+            }
+            Ok(ReaderContent::Bilingual(pairs))
+        }
+    }
+}
+
 #[uniffi::export]
 pub fn reader_document(html: String, load_images: bool) -> String {
     let sources = if load_images {
-        "https: http:"
+        "https: http: data:"
     } else {
         "'none'"
     };
@@ -42,16 +114,18 @@ pub fn reader_document(html: String, load_images: bool) -> String {
     };
     format!("<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; style-src 'unsafe-inline'; img-src {sources}; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'\"><style>:root{{color-scheme:light}}body{{font:15px -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei UI',sans-serif;line-height:1.65;color:#202724;margin:0;overflow-wrap:anywhere}}table{{max-width:100%}}pre{{white-space:pre-wrap}}a{{color:#226451}}blockquote{{border-left:2px solid #e7ebe8;margin-left:0;padding-left:16px}}.lightmail-empty-link-label{{display:inline-block!important;padding:10px 16px!important;border:1px solid currentColor!important;border-radius:5px!important;color:#226451!important;background:#f2f7f5!important}}{image_style}</style></head><body>{html}</body></html>")
 }
-// Enforce the same finite work budget as MIME conversion before allocating HTML.
-fn markdown_html(markdown: &str) -> Result<String> {
-    use pulldown_cmark::{Event, Options, Parser};
-    use std::io::Write;
+fn markdown_options() -> pulldown_cmark::Options {
+    pulldown_cmark::Options::ENABLE_TABLES | pulldown_cmark::Options::ENABLE_STRIKETHROUGH
+}
+// Enforce the same finite work budget as MIME conversion before any reader,
+// browser or native, allocates a document for this Markdown.
+fn markdown_budget(markdown: &str) -> Result<()> {
+    use pulldown_cmark::{Event, Parser};
     if markdown.len() > 4 * 1024 * 1024 {
         return Err(fail("正文超过显示上限"));
     }
-    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     let mut depth = 0usize;
-    for (count, event) in Parser::new_ext(markdown, options).enumerate() {
+    for (count, event) in Parser::new_ext(markdown, markdown_options()).enumerate() {
         match event {
             Event::Start(_) => depth += 1,
             Event::End(_) => depth = depth.saturating_sub(1),
@@ -61,6 +135,13 @@ fn markdown_html(markdown: &str) -> Result<String> {
             return Err(fail("正文结构过于复杂"));
         }
     }
+    Ok(())
+}
+fn markdown_html(markdown: &str) -> Result<String> {
+    use pulldown_cmark::{Event, Parser};
+    use std::io::Write;
+    markdown_budget(markdown)?;
+    let options = markdown_options();
     struct Bounded(Vec<u8>);
     impl Write for Bounded {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -138,6 +219,68 @@ mod tests {
                 .unwrap();
         assert!(!html.contains("<script>"));
         assert!(html.contains("<strong>Safe</strong>"));
+    }
+    #[test]
+    fn native_reader_content_follows_mode_and_validation() {
+        let body = MailBody {
+            message_id: "m".into(),
+            text: "plain".into(),
+            markdown: "# Title\n\nFirst\n\nSecond".into(),
+            html: "<p>First</p>".into(),
+            attachments: vec![],
+            content_hash: "hash".into(),
+        };
+        assert_eq!(
+            reader_content(&body, None, ExportMode::Original, true).unwrap(),
+            ReaderContent::Html("<p>First</p>".into())
+        );
+        assert_eq!(
+            reader_content(&body, None, ExportMode::Original, false).unwrap(),
+            ReaderContent::Markdown(body.markdown.clone())
+        );
+        let mut plain = body.clone();
+        plain.markdown.clear();
+        plain.html.clear();
+        assert_eq!(
+            reader_content(&plain, None, ExportMode::Original, true).unwrap(),
+            ReaderContent::Markdown("plain".into())
+        );
+        assert!(reader_content(&body, None, ExportMode::Translated, false).is_err());
+        let blocks = translation_blocks(body.markdown.clone());
+        let translation = TranslationResult {
+            subject: "标题".into(),
+            blocks: blocks
+                .iter()
+                .map(|b| TranslationBlock {
+                    id: b.id,
+                    text: format!("译 {}", b.text),
+                })
+                .collect(),
+            source_hash: "hash".into(),
+            model: "fixture".into(),
+            input_tokens: None,
+            output_tokens: None,
+        };
+        assert_eq!(
+            reader_content(&body, Some(&translation), ExportMode::Translated, false).unwrap(),
+            ReaderContent::Markdown(translation_markdown(translation.clone()))
+        );
+        match reader_content(&body, Some(&translation), ExportMode::Bilingual, false).unwrap() {
+            ReaderContent::Bilingual(pairs) => {
+                assert_eq!(pairs.len(), blocks.len());
+                assert_eq!(pairs[1], ("First".to_string(), "译 First".to_string()));
+            }
+            other => panic!("unexpected reader content {other:?}"),
+        }
+        let mut stale = translation;
+        stale.source_hash = "old".into();
+        assert!(reader_content(&body, Some(&stale), ExportMode::Bilingual, false).is_err());
+        let mut huge = body;
+        huge.markdown = "x".repeat(4 * 1024 * 1024 + 1);
+        huge.html.clear();
+        assert!(reader_content(&huge, None, ExportMode::Original, true).is_err());
+        assert_eq!(provider_color("qq"), "#C19944");
+        assert_eq!(provider_color("custom"), "#6687B7");
     }
     #[test]
     fn document_policy_blocks_execution_and_keeps_layout() {

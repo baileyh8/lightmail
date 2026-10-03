@@ -10,14 +10,18 @@ if [ -e "$STAGE" ]; then
 fi
 mkdir -p "$STAGE/.cargo" dist
 git archive HEAD | tar -x -C "$STAGE"
-bash scripts/cargo.sh vendor --locked "$STAGE/vendor" > build/vendor-config.toml
-cat > "$STAGE/.cargo/config.toml" <<'CONFIG'
-[source.crates-io]
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "vendor"
-CONFIG
+python3 scripts/prepare-source-vendor.py "$STAGE"
+bash scripts/cargo.sh vendor --locked --manifest-path "$STAGE/Cargo.toml" "$STAGE/vendor" > build/vendor-config.toml
+# Keep cargo's Git-source mappings as well as crates.io. The archive is moved
+# outside this checkout, so every vendored directory must be archive-relative.
+python3 - "$STAGE/.cargo/config.toml" <<'PYTHON'
+import re
+import sys
+from pathlib import Path
+config = Path("build/vendor-config.toml").read_text()
+config = re.sub(r'^directory = ".*"$', 'directory = "vendor"', config, flags=re.MULTILINE)
+Path(sys.argv[1]).write_text(config)
+PYTHON
 git rev-parse HEAD > "$STAGE/SOURCE_COMMIT.txt"
 tar -czf "dist/${NAME}.tar.gz" -C build "$NAME"
 (cd dist && shasum -a 256 "${NAME}.tar.gz" >> SHA256SUMS.txt)

@@ -1,6 +1,6 @@
 [package]
 name = "lightmail-desktop"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 license = "GPL-3.0-or-later"
 publish = false
@@ -14,10 +14,10 @@ acceptance = []
 
 [dependencies]
 lightmail_core = { path = ".." }
-gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "windows-manifest", "runtime_shaders"] }
-gpui-component = { version = "=0.5.1", features = ["webview"] }
-wry = { package = "lb-wry", version = "0.53.3" }
+# All GPUI and component APIs come through the Kit facade, pinned as one set.
+gpui-kit = { version = "=0.7.0", default-features = false, features = ["component", "assets"] }
 anyhow = "1"
+base64 = "0.22"
 async-channel = "2"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -27,12 +27,28 @@ uuid = { version = "1", features = ["v4"] }
 url = "2"
 chrono = "0.4"
 rfd = "0.15"
+tempfile = "3"
+# Acceptance runs post input to the native window handle.
 raw-window-handle = "0.6"
-open = "5"
+# Native HTML/CSS reader candidate. Keep the shell out of the dependency graph;
+# GPUI owns the window and receives AnyRender output through blitz_reader.
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "ed03fe183a9f129965ead6435c0caa8e9c49c401", default-features = false, features = ["system-fonts", "complex-scripts"] }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "ed03fe183a9f129965ead6435c0caa8e9c49c401" }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "ed03fe183a9f129965ead6435c0caa8e9c49c401", default-features = false }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "ed03fe183a9f129965ead6435c0caa8e9c49c401" }
+anyrender = "=0.13.0"
+anyrender_vello_cpu = "=0.17.0"
+png = "0.18"
+parley = { git = "https://github.com/linebender/parley", rev = "e52cf10bf96f10b1fdccb77199f38d57dd075a19", default-features = false, features = ["std"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 winreg = "0.55"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_LibraryLoader", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+embed-resource = "3.0"
 
 [dev-dependencies]
-tempfile = "3"
+gpui-kit = { version = "=0.7.0", default-features = false, features = ["component", "assets", "test-support"] }

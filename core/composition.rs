@@ -16,6 +16,60 @@ pub enum ExportMode {
     Bilingual,
 }
 
+/// Draft lifecycle as the store enforces it. Frontends ask which actions are
+/// permitted instead of comparing status strings of their own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftState {
+    Draft,
+    Queued,
+    Sending,
+    Accepted,
+    Failed,
+    DeliveryUnknown,
+}
+impl DraftState {
+    pub fn parse(status: &str) -> Option<Self> {
+        Some(match status {
+            "draft" => Self::Draft,
+            "queued" => Self::Queued,
+            "sending" => Self::Sending,
+            "accepted" => Self::Accepted,
+            "failed" => Self::Failed,
+            "delivery_unknown" => Self::DeliveryUnknown,
+            _ => return None,
+        })
+    }
+    pub fn of(draft: &Draft) -> Option<Self> {
+        Self::parse(&draft.status)
+    }
+    /// `save_draft` only overwrites drafts and failed submissions.
+    pub fn editable(self) -> bool {
+        matches!(self, Self::Draft | Self::Failed)
+    }
+    /// `cancel_queued` only withdraws mail that has not been claimed for SMTP.
+    pub fn withdrawable(self) -> bool {
+        self == Self::Queued
+    }
+    /// A failed submission never reached SMTP DATA, so retrying cannot duplicate it.
+    pub fn retryable(self) -> bool {
+        self == Self::Failed
+    }
+    /// Only the user can settle an interrupted submission, after checking the server.
+    pub fn resolvable(self) -> bool {
+        self == Self::DeliveryUnknown
+    }
+    /// Queued mail is withdrawn first; sending and unresolved mail stay visible.
+    pub fn deletable(self) -> bool {
+        matches!(self, Self::Draft | Self::Failed | Self::Accepted)
+    }
+    pub fn in_outbox(self) -> bool {
+        matches!(
+            self,
+            Self::Queued | Self::Sending | Self::Failed | Self::DeliveryUnknown
+        )
+    }
+}
+
 #[uniffi::export]
 pub fn compose_draft(
     account: Account,

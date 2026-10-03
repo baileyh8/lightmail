@@ -127,7 +127,11 @@ impl async_imap::Authenticator for OAuth {
         format!("user={}\x01auth=Bearer {}\x01\x01", self.user, self.token)
     }
 }
-async fn connect(e: &MailEngine, a: &Account, credential: &str) -> Result<MailSession> {
+async fn connect(
+    a: &Account,
+    credential: &str,
+    route: Option<crate::proxy::Proxy>,
+) -> Result<MailSession> {
     if a.provider == "demo" {
         return Err(fail("示例账号不会连接真实邮箱"));
     }
@@ -135,7 +139,6 @@ async fn connect(e: &MailEngine, a: &Account, credential: &str) -> Result<MailSe
         return Err(fail("请先为此邮箱配置授权信息"));
     }
     let fut = async {
-        let route = e.proxies.get(&a.imap_host);
         let tcp = crate::proxy::connect(&a.imap_host, a.imap_port, route.as_ref()).await?;
         let mut connector_builder = native_tls::TlsConnector::builder();
         connector_builder.min_protocol_version(Some(native_tls::Protocol::Tlsv12));
@@ -152,7 +155,7 @@ async fn connect(e: &MailEngine, a: &Account, credential: &str) -> Result<MailSe
         let tls = tokio_native_tls::TlsConnector::from(connector)
             .connect(&a.imap_host, tcp)
             .await
-            .map_err(|_| fail("收件服务器 TLS 连接失败，请检查网络、系统代理与证书"))?;
+            .map_err(|_| fail("收件服务器 TLS 连接失败，请检查网络、代理与证书"))?;
         let mut client = async_imap::Client::new(tls);
         client
             .read_response()
@@ -196,10 +199,10 @@ async fn connect(e: &MailEngine, a: &Account, credential: &str) -> Result<MailSe
         .await
         .map_err(|_| fail("连接超时，请检查网络"))?
 }
-fn connection_key(a: &Account, c: &str) -> String {
+fn connection_key(a: &Account, c: &str, route: &Option<crate::proxy::Proxy>) -> String {
     mime::hash(&format!(
-        "{}:{}:{}:{}",
-        a.imap_host, a.imap_port, a.address, c
+        "{}:{}:{}:{}:{}:{route:?}",
+        a.imap_host, a.imap_port, a.address, a.auth_kind, c
     ))
 }
 async fn take_session(
@@ -207,20 +210,18 @@ async fn take_session(
     slot: &mut Option<Pooled>,
     a: &Account,
     c: &str,
-) -> Result<MailSession> {
-    let key = connection_key(a, c);
+) -> Result<(MailSession, String)> {
+    let route = e.mail_proxy(&a.id, &a.imap_host)?;
+    let key = connection_key(a, c, &route);
     if let Some(p) = slot.take() {
         if p.key == key {
-            return Ok(p.session);
+            return Ok((p.session, key));
         }
     }
-    connect(e, a, c).await
+    connect(a, c, route).await.map(|session| (session, key))
 }
-fn return_session(slot: &mut Option<Pooled>, s: MailSession, a: &Account, c: &str) {
-    *slot = Some(Pooled {
-        session: s,
-        key: connection_key(a, c),
-    });
+fn return_session(slot: &mut Option<Pooled>, s: MailSession, key: String) {
+    *slot = Some(Pooled { session: s, key });
 }
 fn role_for(path: &str, attrs: &str) -> String {
     let p = mime::decode_folder(path).to_lowercase();
@@ -297,7 +298,7 @@ pub async fn sync(
     }
     let slot = e.pool.slot(id);
     let mut guard = slot.lock().await;
-    let mut session = take_session(e, &mut guard, &a, credential).await?;
+    let (mut session, connection_key) = take_session(e, &mut guard, &a, credential).await?;
     let work = async {
         let folders = discover(&mut session, &a).await?;
         {
@@ -498,7 +499,7 @@ pub async fn sync(
         .await
         .map_err(|_| fail("同步超时，已保存完成的文件夹，可稍后刷新"))?;
     if result.is_ok() {
-        return_session(&mut guard, session, &a, credential);
+        return_session(&mut guard, session, connection_key);
     }
     result
 }
@@ -512,6 +513,7 @@ struct Part {
     filename: String,
     size: u64,
     attachment: bool,
+    content_id: String,
 }
 fn flatten_parts(
     bs: &BodyStructure<'_>,
@@ -570,6 +572,12 @@ fn part_info(c: &BodyContentCommon<'_>, o: &BodyContentSinglePart<'_>, path: Vec
     }
     .into();
     Part {
+        content_id: o
+            .id
+            .as_deref()
+            .unwrap_or_default()
+            .trim_matches(['<', '>'])
+            .to_owned(),
         path,
         mime,
         encoding,
@@ -697,7 +705,7 @@ async fn read_body(e: &MailEngine, id: &str, c: &str, role: &str) -> Result<Mail
     // Foreground reads must never queue behind whole-account sync or prefetch.
     let slot = e.pool.slot(&format!("{role}:{}", a.id));
     let mut guard = slot.lock().await;
-    let mut s = take_session(e, &mut guard, &a, c).await?;
+    let (mut s, connection_key) = take_session(e, &mut guard, &a, c).await?;
     let work = async {
         let (ps, rendered) = parts(&mut s, &m).await?;
         let mut html = Vec::new();
@@ -720,11 +728,51 @@ async fn read_body(e: &MailEngine, id: &str, c: &str, role: &str) -> Result<Mail
             }
         }
         let markdown = md.join("\n\n");
-        let html = if has_html {
+        let mut html = if has_html {
             html.join("\n")
         } else {
             String::new()
         };
+        let cids = crate::html::image_cids(&html);
+        let mut resources = HashMap::new();
+        let mut inline_bytes = 0usize;
+        for p in ps
+            .iter()
+            .filter(|p| !p.content_id.is_empty() && cids.contains(&p.content_id))
+            .take(64)
+        {
+            if ![
+                "image/png",
+                "image/jpeg",
+                "image/gif",
+                "image/webp",
+                "image/bmp",
+            ]
+            .contains(&p.mime.as_str())
+            {
+                continue;
+            }
+            let remaining = mime::INLINE_IMAGE_BYTES.saturating_sub(inline_bytes);
+            if remaining == 0 || p.size > remaining as u64 {
+                continue;
+            }
+            let raw = fetch_part(&mut s, m.uid, p, remaining as u64).await?;
+            if let Some(mail) = mail_parser::MessageParser::default().parse(&raw) {
+                if let Some(part) = mail.parts.first() {
+                    let bytes = part.contents();
+                    if bytes.len() <= remaining {
+                        if let Some(uri) = mime::inline_image_uri(&p.mime, bytes) {
+                            inline_bytes += bytes.len();
+                            resources.entry(p.content_id.clone()).or_insert(uri);
+                        }
+                    }
+                }
+            }
+        }
+        html = crate::html::embed_inline_images(&html, &resources);
+        if html.len() > 8 * 1024 * 1024 {
+            return Err(fail("包含内嵌图片的正文超过显示上限"));
+        }
         let text = mime::plain_text(&html, &markdown);
         let attachments = ps
             .iter()
@@ -765,7 +813,7 @@ async fn read_body(e: &MailEngine, id: &str, c: &str, role: &str) -> Result<Mail
         .await
         .map_err(|_| fail("正文下载超时"))?;
     if result.is_ok() {
-        return_session(&mut guard, s, &a, c);
+        return_session(&mut guard, s, connection_key);
     }
     result
 }
@@ -780,7 +828,7 @@ pub async fn flag(e: &MailEngine, id: &str, c: &str, flag: &str, value: bool) ->
     if a.provider != "demo" && m.uid > 0 {
         let slot = e.pool.slot(&format!("reader:{}", a.id));
         let mut guard = slot.lock().await;
-        let mut s = take_session(e, &mut guard, &a, c).await?;
+        let (mut s, connection_key) = take_session(e, &mut guard, &a, c).await?;
         let work = async {
             let mailbox = s
                 .select(folder_path(&m))
@@ -803,7 +851,7 @@ pub async fn flag(e: &MailEngine, id: &str, c: &str, flag: &str, value: bool) ->
         tokio::time::timeout(Duration::from_secs(25), work)
             .await
             .map_err(|_| fail("标记超时，请刷新确认状态"))??;
-        return_session(&mut guard, s, &a, c);
+        return_session(&mut guard, s, connection_key);
     }
     let db = e.connection()?;
     MailEngine::require_account(&db, &a.id)?;
@@ -843,7 +891,7 @@ pub async fn move_to(e: &MailEngine, id: &str, c: &str, role: &str) -> Result<()
     }
     let slot = e.pool.slot(&a.id);
     let mut guard = slot.lock().await;
-    let mut s = take_session(e, &mut guard, &a, c).await?;
+    let (mut s, connection_key) = take_session(e, &mut guard, &a, c).await?;
     let work = async {
         let mailbox = s
             .select(folder_path(&m))
@@ -898,7 +946,7 @@ pub async fn move_to(e: &MailEngine, id: &str, c: &str, role: &str) -> Result<()
     tokio::time::timeout(Duration::from_secs(30), work)
         .await
         .map_err(|_| fail("移动超时，请刷新确认结果"))??;
-    return_session(&mut guard, s, &a, c);
+    return_session(&mut guard, s, connection_key);
     if a.provider == "gmail" && role == "archive" {
         e.connection()?.execute("DELETE FROM messages WHERE canonical_id=?1 AND folder_id IN (SELECT id FROM folders WHERE role='inbox')",[&m.canonical_id]).map_err(fail)?;
     } else {
@@ -915,13 +963,13 @@ pub async fn idle(e: &MailEngine, id: &str, c: &str) -> Result<bool> {
     }
     let slot = e.pool.slot(&format!("idle:{id}"));
     let mut guard = slot.lock().await;
-    let mut s = take_session(e, &mut guard, &a, c).await?;
+    let (mut s, connection_key) = take_session(e, &mut guard, &a, c).await?;
     let caps = tokio::time::timeout(Duration::from_secs(15), s.capabilities())
         .await
         .map_err(|_| fail("监视连接超时"))?
         .map_err(|_| fail("监视连接中断"))?;
     if !caps.has_str("IDLE") {
-        return_session(&mut guard, s, &a, c);
+        return_session(&mut guard, s, connection_key);
         return Ok(false);
     }
     tokio::time::timeout(Duration::from_secs(15), s.select("INBOX"))
@@ -944,7 +992,7 @@ pub async fn idle(e: &MailEngine, id: &str, c: &str) -> Result<bool> {
         .await
         .map_err(|_| fail("监视连接超时"))?
         .map_err(|_| fail("监视结束失败"))?;
-    return_session(&mut guard, session, &a, c);
+    return_session(&mut guard, session, connection_key);
     Ok(matches!(
         response,
         async_imap::extensions::idle::IdleResponse::NewData(_)
@@ -975,7 +1023,7 @@ pub async fn attachment(
     }
     let slot = e.pool.slot(&a.id);
     let mut guard = slot.lock().await;
-    let mut s = take_session(e, &mut guard, &a, c).await?;
+    let (mut s, connection_key) = take_session(e, &mut guard, &a, c).await?;
     let work = async {
         let (ps, _) = parts(&mut s, &m).await?;
         let part = ps
@@ -1005,7 +1053,7 @@ pub async fn attachment(
         .await
         .map_err(|_| fail("附件下载超时"))?;
     if result.is_ok() {
-        return_session(&mut guard, s, &a, c);
+        return_session(&mut guard, s, connection_key);
     }
     result
 }
@@ -1120,7 +1168,7 @@ async fn send_inner(
     } else {
         tls
     };
-    let smtp_route = e.proxies.get(&a.smtp_host);
+    let smtp_route = e.mail_proxy(&a.id, &a.smtp_host)?;
     let smtp_tunnel = if let Some(proxy) = smtp_route.as_ref() {
         Some(crate::proxy::SmtpTunnel::open(&a.smtp_host, a.smtp_port, proxy).await?)
     } else {
@@ -1194,7 +1242,8 @@ async fn send_inner(
                 .into_iter()
                 .find(|f| f.role == "sent")
                 .ok_or_else(|| fail("未找到已发送文件夹"))?;
-            let mut s = connect(e, &a, credential).await?;
+            let route = e.mail_proxy(&a.id, &a.imap_host)?;
+            let mut s = connect(&a, credential, route).await?;
             s.append(&target.path, Some("(\\Seen)"), None, message.formatted())
                 .await
                 .map_err(|_| fail("已发送副本保存失败"))?;

@@ -3,9 +3,71 @@ use base64::Engine;
 use mail_parser::{MessageParser, MimeHeaders};
 use rusqlite::params;
 use sha2::{Digest, Sha256};
+pub(crate) const INLINE_IMAGE_BYTES: usize = 2 * 1024 * 1024;
+
+pub(crate) fn inline_image_uri(mime: &str, bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() || bytes.len() > INLINE_IMAGE_BYTES {
+        return None;
+    }
+    let mime = mime.to_ascii_lowercase();
+    let valid = match mime.as_str() {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        "image/bmp" => bytes.starts_with(b"BM"),
+        _ => false,
+    };
+    valid.then(|| {
+        format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    })
+}
+fn safe_image_source(source: &str) -> bool {
+    if crate::html::cid_id(source).is_some() {
+        return source.len() <= 1024;
+    }
+    if let Some(value) = source.strip_prefix("data:") {
+        let Some((mime, encoded)) = value.split_once(";base64,") else {
+            return false;
+        };
+        if encoded.len() > INLINE_IMAGE_BYTES / 3 * 4 + 4 {
+            return false;
+        }
+        return base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .ok()
+            .is_some_and(|bytes| inline_image_uri(mime, &bytes).is_some());
+    }
+    url::Url::parse(source).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+}
 
 pub fn hash(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+#[cfg(test)]
+mod inline_tests {
+    use super::*;
+    const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    #[test]
+    fn related_mime_resolves_cid_and_keeps_only_raster_data_sources() {
+        let raw = format!("MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=fixture\r\n\r\n--fixture\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Body</p><img src='cid:logo%40fixture' alt='Logo'><img src='data:image/png;base64,{PIXEL}'><img src='data:image/svg+xml;base64,PHN2Zz48L3N2Zz4='><a href='data:text/html,bad'>bad</a>\r\n--fixture\r\nContent-Type: image/png\r\nContent-ID: <logo@fixture>\r\nContent-Transfer-Encoding: base64\r\n\r\n{PIXEL}\r\n--fixture--\r\n");
+        let body = parse_body(raw.as_bytes(), "cid-fixture").unwrap();
+        assert!(!body.html.contains("cid:"));
+        assert_eq!(body.html.matches("data:image/png;base64,").count(), 2);
+        assert!(!body.html.contains("data:image/svg"));
+        assert!(!body.html.contains("href=\"data:"));
+        assert!(body.markdown.contains("Body"));
+        assert!(inline_image_uri("image/png", &vec![0; INLINE_IMAGE_BYTES + 1]).is_none());
+        assert!(safe_image_source("data:text/html;base64,PGgxPmJhZDwvaDE+") == false);
+        assert!(
+            !clean_html("<img src='file:///private.png'><a href='cid:logo'>x</a>")
+                .contains("src=\"file:")
+        );
+    }
 }
 pub fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -87,7 +149,23 @@ pub fn clean_html(html: &str) -> String {
             .into_iter()
             .collect(),
         )
-        .url_schemes(["https", "http", "mailto"].into_iter().collect())
+        .url_schemes(
+            ["https", "http", "mailto", "cid", "data"]
+                .into_iter()
+                .collect(),
+        )
+        .attribute_filter(|tag, attribute, value| {
+            if tag == "img" && attribute == "src" {
+                return safe_image_source(value).then(|| std::borrow::Cow::Borrowed(value));
+            }
+            if attribute == "href"
+                && !url::Url::parse(value)
+                    .is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "mailto"))
+            {
+                return None;
+            }
+            Some(std::borrow::Cow::Borrowed(value))
+        })
         .clean(&prepared)
         .to_string();
     format!("{}{clean}", crate::html::RENDER_MARKER)
@@ -151,13 +229,37 @@ pub fn parse_body(raw: &[u8], id: &str) -> Result<MailBody> {
     let mail = MessageParser::default()
         .parse(raw)
         .ok_or_else(|| fail("无法解析邮件正文"))?;
+    let mut inline = std::collections::HashMap::new();
+    let mut inline_bytes = 0;
+    for part in &mail.parts {
+        if inline.len() >= 64 {
+            break;
+        }
+        let Some(cid) = part.content_id() else {
+            continue;
+        };
+        let Some(kind) = part.content_type() else {
+            continue;
+        };
+        let bytes = part.contents();
+        if inline_bytes + bytes.len() > INLINE_IMAGE_BYTES {
+            continue;
+        }
+        let mime = format!("{}/{}", kind.ctype(), kind.subtype().unwrap_or(""));
+        if let Some(uri) = inline_image_uri(&mime, bytes) {
+            inline_bytes += bytes.len();
+            inline
+                .entry(cid.trim_matches(['<', '>']).to_owned())
+                .or_insert(uri);
+        }
+    }
     let mut html = Vec::new();
     let mut markdown = Vec::new();
     // The parser's HTML-body sequence also includes plain text sections in multipart/mixed.
     for p in mail.html_bodies() {
         match &p.body {
             mail_parser::PartType::Html(value) => {
-                let safe = clean_html(value);
+                let safe = clean_html(&crate::html::embed_inline_images(value, &inline));
                 markdown.push(crate::markdown::from_html(&safe)?);
                 html.push(safe);
             }

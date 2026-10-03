@@ -1,0 +1,14 @@
+[package]
+name = "serde_fmt"
+version = "1.1.0"
+edition = "2018"
+license = "Apache-2.0 OR MIT"
+description = "Write serde::Serialize values using standard formatting APIs"
+publish = false
+
+[features]
+std = ["serde_core/std"]
+
+[dependencies.serde_core]
+version = "1.0.220"
+default-features = false

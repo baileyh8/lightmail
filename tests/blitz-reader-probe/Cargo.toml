@@ -1,0 +1,18 @@
+[package]
+name = "lightmail-blitz-reader-probe"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+blitz-dom = { path = "../../.tooling/blitz-research/packages/blitz-dom", default-features = false, features = ["system-fonts"] }
+blitz-html = { path = "../../.tooling/blitz-research/packages/blitz-html" }
+blitz-traits = { path = "../../.tooling/blitz-research/packages/blitz-traits" }
+blitz-paint = { path = "../../.tooling/blitz-research/packages/blitz-paint", default-features = false }
+anyrender = "=0.13.0"
+anyrender_vello_cpu = "=0.17.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde_json = "1"

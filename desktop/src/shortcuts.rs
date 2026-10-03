@@ -1,4 +1,4 @@
-use gpui::*;
+use gpui_kit::*;
 actions!(
     lightmail,
     [
@@ -10,7 +10,13 @@ actions!(
         CopyMarkdown,
         Settings,
         ImportMail,
-        ClosePanel
+        ClosePanel,
+        CopyReaderSelection,
+        SelectReaderAll,
+        ReaderPageDown,
+        ReaderPageUp,
+        ReaderStart,
+        ReaderEnd
     ]
 );
 pub fn bind(cx: &mut App) {
@@ -33,5 +39,23 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new(&format!("{modifier}-,"), Settings, Some("Lightmail")),
         KeyBinding::new(&format!("{modifier}-o"), ImportMail, Some("Lightmail")),
         KeyBinding::new("escape", ClosePanel, Some("Lightmail")),
+        KeyBinding::new("pagedown", ReaderPageDown, Some("BlitzReader")),
+        KeyBinding::new("pageup", ReaderPageUp, Some("BlitzReader")),
+        KeyBinding::new(
+            &format!("{modifier}-home"),
+            ReaderStart,
+            Some("BlitzReader"),
+        ),
+        KeyBinding::new(&format!("{modifier}-end"), ReaderEnd, Some("BlitzReader")),
+        KeyBinding::new(
+            &format!("{modifier}-c"),
+            CopyReaderSelection,
+            Some("BlitzReader"),
+        ),
+        KeyBinding::new(
+            &format!("{modifier}-a"),
+            SelectReaderAll,
+            Some("BlitzReader"),
+        ),
     ]);
 }

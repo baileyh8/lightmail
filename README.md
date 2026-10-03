@@ -5,13 +5,13 @@
   <p>为 macOS 和 Windows 打造的轻量本地邮箱客户端。聚合收发、专注阅读、全文翻译、一键 Markdown。</p>
   <p>A lightweight, native macOS and Windows email client. Multiple inboxes. One quiet workspace.</p>
   <p>
-    <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.4"><img src="https://img.shields.io/badge/version-v0.0.4-226451?style=flat-square" alt="v0.0.4"></a>
+    <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.5"><img src="https://img.shields.io/badge/version-v0.0.5-226451?style=flat-square" alt="v0.0.5"></a>
     <img src="https://img.shields.io/badge/macOS-15%2B-363d3a?style=flat-square" alt="macOS 15+">
     <img src="https://img.shields.io/badge/Apple_Silicon-arm64-363d3a?style=flat-square" alt="Apple Silicon">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-226451?style=flat-square" alt="GPL-3.0-or-later"></a>
     <a href="https://github.com/baileyh8/lightmail/actions/workflows/ci.yml"><img src="https://github.com/baileyh8/lightmail/actions/workflows/ci.yml/badge.svg" alt="Native clients and shared core tests"></a>
   </p>
-  <p><a href="https://lightmail.sohym.com">官网</a> · <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.4">下载预览版</a> · <a href="docs/getting-started.md">使用指南</a> · <a href="https://github.com/baileyh8/lightmail/issues">反馈问题</a></p>
+  <p><a href="https://lightmail.sohym.com">官网</a> · <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.5">下载预览版</a> · <a href="docs/getting-started.md">使用指南</a> · <a href="https://github.com/baileyh8/lightmail/issues">反馈问题</a></p>
 </div>
 
 ![轻邮：聚合收件箱与原文阅读](docs/screenshots/inbox.png)
@@ -38,11 +38,11 @@
 
 </details>
 
-## 从 v0.0.4 开始
+## 从 v0.0.5 开始
 
-**需要 Apple Silicon Mac 和 macOS 15+。** 从 [Releases](https://github.com/baileyh8/lightmail/releases/tag/v0.0.4) 下载 ZIP，解压并将 `轻邮.app` 放入 Applications。运行应用不需要额外安装 Node、Python 或 Rust。
+**需要 Apple Silicon Mac 和 macOS 15+。** 从 [Releases](https://github.com/baileyh8/lightmail/releases/tag/v0.0.5) 下载 ZIP，解压并将 `轻邮.app` 放入 Applications。运行应用不需要额外安装 Node、Python 或 Rust。
 
-**Windows 10 / 11 x64**：下载 `windows-x64-setup.exe` 按用户安装，或解压 `windows-x64.zip` 直接运行 `Lightmail.exe`。需要 Microsoft Edge WebView2 Runtime；安装包尚未代码签名。卸载保留邮件、草稿与设置。
+**Windows 10 1809+ / Windows 11 x64**：使用 Windows 安装程序按用户安装，或解压便携 ZIP 后直接运行 `Lightmail.exe`。客户端使用 GPUI Kit + Blitz 原生界面与 HTML/CSS 阅读器，运行不需要 WebView2。安装包尚未代码签名，卸载保留邮件、草稿与设置。当前实现与验收边界见 [Windows 整改记录](docs/windows-review-fixes-20261003.md)，正式发布的 Windows 下载以 Releases 实际附件为准。
 
 > 这是早期预览版，当前使用 ad-hoc 签名，尚未做 Apple Developer ID 公证。macOS 可能阻止首次打开；请核对下载来源和 SHA-256，或选择从源码构建。Intel 尚未验证。
 
@@ -86,7 +86,7 @@ Gmail OAuth 需配置你自己的 Desktop Client ID；仓库与安装包不附�
 
 ## 轻量，是具体的设计
 
-- **原生界面**：macOS 使用 SwiftUI / AppKit + WKWebView；Windows 使用 GPUI + 系统 WebView2，沿用同一套三栏设计。
+- **原生界面**：macOS 使用 SwiftUI / AppKit + WKWebView；Windows 使用 GPUI Kit 原生绘制，阅读器不嵌入浏览器，沿用同一套三栏设计。
 - **共享业务核心**：Rust / Tokio 统一处理同步调度、预加载、OAuth、发送队列、LLM 翻译与 Markdown 导出；SQLite 保存摘要、草稿与缓存。
 - **每账号 20 封**：优先预加载最新邮件；旧信摘要保留，正文按需临时读取。
 - **凭证分开保存**：密码、OAuth token 和 API Key 使用 macOS Keychain 或 Windows 凭据管理器。
@@ -119,16 +119,23 @@ python3 scripts/check.py
 
 ### Windows
 
-需要 Windows 10 / 11 x64、Visual Studio C++ Build Tools（含 Windows SDK）、Rust stable 和系统 WebView2 Runtime。
+需要 Windows 10 / 11 x64、Visual Studio C++ Build Tools（含 Windows SDK，GPUI 着色器用其中的 fxc 编译）和 Rust 1.97 或更新版本；CI 固定使用 1.97.0。运行时不需要 WebView2。
 
 ```powershell
 ./scripts/build-windows.ps1
 cargo test --locked --release -p lightmail-desktop
 # 安装 Inno Setup 6 后可打包安装程序与便携 ZIP
 ./scripts/package-windows.ps1
+# 验收：先构建带验收功能的版本，再运行原生界面验收，
+# 并在 build/windows-acceptance 里静默安装、卸载刚打好的安装包
+cargo build --locked --release -p lightmail-desktop --features acceptance
+./scripts/check-windows.ps1   # 加 -SoakReads 1500 另做连续阅读的内存检查
+# 此用户已安装轻邮时使用 -SkipInstaller，避免改写已有安装的注册信息。
 ```
 
 产物：`target/release/Lightmail.exe`。隔离示例：`Lightmail.exe --demo`。Windows 使用 LLM 翻译，不提供 Apple 系统翻译；支持固定 HTTP / SOCKS 系统代理，暂不支持 PAC。
+
+本分支的 Windows 客户端关闭窗口后常驻托盘；点击托盘图标恢复，右键可立即收信、切换自动收信或退出。自动收信默认开启，关闭后仍可手动收信与发信。原文默认采用简化 HTML 阅读，复杂 CSS 和嵌套表格尚不能原样还原，详见 [HTML 阅读器能力与方案](docs/windows-html-reader.md)。
 
 ### 共享核心
 
@@ -154,7 +161,7 @@ Windows 对应使用 `Ctrl` 替代 `⌘`；`Esc` 返回阅读页。
 
 ## 当前边界
 
-Windows 自动验收覆盖 CI 构建、凭据存取、原生窗口、WebView2 和安装/卸载。尚无 Windows 真机人工验收，自动检查不代表所有显卡、DPI 和服务商环境已验证。
+Windows 自动验收覆盖 CI 构建、凭据存取、原生窗口与原生阅读器（正文文字与屏幕像素、图片与链接策略）、窗口按钮与拖动区的命中测试，以及安装/卸载。尚无 Windows 真机人工验收，自动检查不代表所有显卡、DPI、输入法和服务商环境已验证。
 
 Gmail 已完成真实多账号登录、正文阅读与缓存验证；QQ 已验证真实账号收件同步、正文阅读与 20 封缓存。163 提供接入预设，QQ / 163 的真实发件验证仍待覆盖。协议样例通过不代表所有服务商都已验证，也不代表真实投递到达或所有模型的翻译质量。
 
