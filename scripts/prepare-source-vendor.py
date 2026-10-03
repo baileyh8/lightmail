@@ -6,7 +6,8 @@ Cargo vendor cannot merge identical name/version pairs from distinct sources.
 """
 import json
 from pathlib import Path
-import shutil
+import hashlib
+import tarfile
 import subprocess
 import sys
 import tomllib
@@ -32,10 +33,13 @@ for package in collisions:
     source = Path(match["manifest_path"]).parent
     relative = Path("vendor-path") / (package["name"] + "-" + package["version"])
     target = stage / relative
-    shutil.copytree(source, target)
-    # This is the exact registry package from Cargo.lock, including its license.
-    checksums = json.loads((target / ".cargo-checksum.json").read_text())
-    assert checksums["package"] == package["checksum"]
+    # Extract the original registry archive, not potentially edited cache files.
+    archive = source.parents[2] / "cache" / source.parent.name / (target.name + ".crate")
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == package["checksum"]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive) as bundle:
+        assert all(Path(member.name).parts[0] == target.name for member in bundle.getmembers())
+        bundle.extractall(target.parent, filter="data")
     patches.append(f'{package["name"]} = {{ path = "{relative.as_posix()}" }}')
     records.append({k: package[k] for k in ("name", "version", "source", "checksum")})
 manifest = stage / "Cargo.toml"
