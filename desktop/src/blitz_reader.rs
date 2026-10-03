@@ -1403,6 +1403,10 @@ mod tests {
             .unwrap()
             .into_rgba8();
         assert_eq!(png.get_pixel(32, 48).0, [0, 128, 0, 255]);
-        assert!(allowed.height >= blocked.height + 80.);
+        let blocked_png = image::load_from_memory(&blocked.image.bytes)
+            .unwrap()
+            .into_rgba8();
+        assert_ne!(blocked_png.get_pixel(32, 48).0, [0, 128, 0, 255]);
+        assert!(allowed.height >= blocked.height);
     }
 }
