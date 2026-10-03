@@ -4529,7 +4529,7 @@ dependencies = [
 
 [[package]]
 name = "lightmail-desktop"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "anyrender",
@@ -4563,7 +4563,7 @@ dependencies = [
 
 [[package]]
 name = "lightmail_core"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "ammonia",
  "async-imap",

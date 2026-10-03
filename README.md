@@ -5,13 +5,13 @@
   <p>为 macOS 和 Windows 打造的轻量本地邮箱客户端。聚合收发、专注阅读、全文翻译、一键 Markdown。</p>
   <p>A lightweight, native macOS and Windows email client. Multiple inboxes. One quiet workspace.</p>
   <p>
-    <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.4"><img src="https://img.shields.io/badge/version-v0.0.4-226451?style=flat-square" alt="v0.0.4"></a>
+    <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.5"><img src="https://img.shields.io/badge/version-v0.0.5-226451?style=flat-square" alt="v0.0.5"></a>
     <img src="https://img.shields.io/badge/macOS-15%2B-363d3a?style=flat-square" alt="macOS 15+">
     <img src="https://img.shields.io/badge/Apple_Silicon-arm64-363d3a?style=flat-square" alt="Apple Silicon">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-226451?style=flat-square" alt="GPL-3.0-or-later"></a>
     <a href="https://github.com/baileyh8/lightmail/actions/workflows/ci.yml"><img src="https://github.com/baileyh8/lightmail/actions/workflows/ci.yml/badge.svg" alt="Native clients and shared core tests"></a>
   </p>
-  <p><a href="https://lightmail.sohym.com">官网</a> · <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.4">下载预览版</a> · <a href="docs/getting-started.md">使用指南</a> · <a href="https://github.com/baileyh8/lightmail/issues">反馈问题</a></p>
+  <p><a href="https://lightmail.sohym.com">官网</a> · <a href="https://github.com/baileyh8/lightmail/releases/tag/v0.0.5">下载预览版</a> · <a href="docs/getting-started.md">使用指南</a> · <a href="https://github.com/baileyh8/lightmail/issues">反馈问题</a></p>
 </div>
 
 ![轻邮：聚合收件箱与原文阅读](docs/screenshots/inbox.png)
@@ -38,9 +38,9 @@
 
 </details>
 
-## 从 v0.0.4 开始
+## 从 v0.0.5 开始
 
-**需要 Apple Silicon Mac 和 macOS 15+。** 从 [Releases](https://github.com/baileyh8/lightmail/releases/tag/v0.0.4) 下载 ZIP，解压并将 `轻邮.app` 放入 Applications。运行应用不需要额外安装 Node、Python 或 Rust。
+**需要 Apple Silicon Mac 和 macOS 15+。** 从 [Releases](https://github.com/baileyh8/lightmail/releases/tag/v0.0.5) 下载 ZIP，解压并将 `轻邮.app` 放入 Applications。运行应用不需要额外安装 Node、Python 或 Rust。
 
 **Windows 10 1809+ / Windows 11 x64**：使用 Windows 安装程序按用户安装，或解压便携 ZIP 后直接运行 `Lightmail.exe`。客户端使用 GPUI Kit + Blitz 原生界面与 HTML/CSS 阅读器，运行不需要 WebView2。安装包尚未代码签名，卸载保留邮件、草稿与设置。当前实现与验收边界见 [Windows 整改记录](docs/windows-review-fixes-20261003.md)，正式发布的 Windows 下载以 Releases 实际附件为准。
 

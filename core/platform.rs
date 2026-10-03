@@ -79,15 +79,6 @@ pub(crate) async fn secret_read(
         .await
         .map_err(|_| fail("凭证读取已中断"))?
 }
-pub(crate) async fn secret_write(
-    platform: Arc<dyn PlatformServices>,
-    key: String,
-    value: String,
-) -> Result<()> {
-    tokio::task::spawn_blocking(move || platform.write_secret(key, value))
-        .await
-        .map_err(|_| fail("凭证保存已中断"))?
-}
 
 pub(crate) fn http_client(
     platform: &dyn PlatformServices,
