@@ -244,6 +244,118 @@ async fn window_chrome(
     }
     Ok(())
 }
+/// Resize the real native window, then test the compact and labelled toolbars.
+/// Record actual sizes as runners may constrain the requested viewport.
+async fn toolbar_widths(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    path: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    let original = handle.update(cx, |_, window, _| window.viewport_size())?;
+    let scale = handle.update(cx, |_, window, _| window.scale_factor())?;
+    let percent = (scale * 100.) as u32;
+    let mut samples = Vec::new();
+    for width in [984., 1040., 1120., 1280.] {
+        handle.update(cx, |_, window, _| {
+            window.resize(size(px(width), original.height))
+        })?;
+        // Window.resize and layout are asynchronous. Require two equal layouts
+        // including the viewport and every toolbar target before hit testing.
+        let mut previous = None;
+        let mut settled = false;
+        for _ in 0..40 {
+            pause(cx).await;
+            let geometry = handle.update(cx, |_, window, cx| {
+                let probes = &view.read(cx).probes;
+                (
+                    window.viewport_size(),
+                    [
+                        "archive",
+                        "trash",
+                        "reader-more",
+                        "reader-toolbar-drag",
+                        "translate",
+                        "copy-markdown",
+                        "window-minimize",
+                    ]
+                    .map(|name| probes.get(name).copied()),
+                )
+            })?;
+            if previous.as_ref() == Some(&geometry) && geometry.1.iter().all(Option::is_some) {
+                settled = true;
+                break;
+            }
+            previous = Some(geometry);
+        }
+        anyhow::ensure!(
+            settled,
+            "Toolbar layout did not settle at requested width {width}"
+        );
+        samples.push(check_toolbar(view, handle, width, cx)?);
+        std::fs::write(
+            path.join(format!("toolbar-widths-{percent}.json")),
+            serde_json::to_vec_pretty(&samples)?,
+        )?;
+        screenshot(
+            path,
+            &format!("windows-toolbar-{}-dpi-{percent}", width as u32),
+            cx,
+        )
+        .await?;
+    }
+    handle.update(cx, |_, window, _| window.resize(original))?;
+    for _ in 0..4 {
+        pause(cx).await;
+    }
+    Ok(())
+}
+fn check_toolbar(
+    view: &Entity<MailDesktop>,
+    handle: AnyWindowHandle,
+    requested_width: f32,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<serde_json::Value> {
+    let (viewport, scale) = handle.update(cx, |_, window, _| {
+        (window.viewport_size(), window.scale_factor())
+    })?;
+    let drag = bounds(view, handle, "reader-toolbar-drag", cx)?;
+    anyhow::ensure!(
+        drag.size.width >= px(24.),
+        "Reader drag area collapsed: {drag:?}"
+    );
+    let controls = bounds(view, handle, "window-minimize", cx)?;
+    let mut targets = Vec::new();
+    for name in [
+        "archive",
+        "trash",
+        "reader-more",
+        "reader-toolbar-drag",
+        "translate",
+        "copy-markdown",
+    ] {
+        let b = bounds(view, handle, name, cx)?;
+        let code = hit_test(handle, b.center(), cx)?;
+        let expected = if name == "reader-toolbar-drag" {
+            HTCAPTION
+        } else {
+            HTCLIENT
+        };
+        targets.push(serde_json::json!({"name":name,"x":f32::from(b.left()),"width":f32::from(b.size.width),"hit_test":code}));
+        anyhow::ensure!(
+            b.size.width >= px(24.) && b.right() <= controls.left(),
+            "{name} is collapsed or overlaps window controls: {b:?}, controls {controls:?}"
+        );
+        anyhow::ensure!(
+            code == expected,
+            "{name} at {}px / {scale}x hit test returned {code}, expected {expected}",
+            f32::from(viewport.width)
+        );
+    }
+    Ok(
+        serde_json::json!({"requested_width":requested_width,"actual_width":f32::from(viewport.width),"height":f32::from(viewport.height),"scale":scale,"targets":targets}),
+    )
+}
 /// With a dialog open, its dimmed margin moves the window, the dialog keeps
 /// its clicks, and the window controls stay above it.
 async fn overlay_margin(
@@ -1101,6 +1213,15 @@ async fn reader_dpi(
             );
             Ok::<_, anyhow::Error>(())
         })??;
+        let width = handle.update(cx, |_, window, _| window.viewport_size().width)?;
+        let toolbar = check_toolbar(view, handle, f32::from(width), cx)?;
+        std::fs::write(
+            path.join(format!("toolbar-dpi-{}.json", (scale * 100.) as u32)),
+            serde_json::to_vec_pretty(&toolbar)?,
+        )?;
+        if scale != initial {
+            toolbar_widths(view, handle, path, cx).await?;
+        }
         screenshot(
             path,
             &format!("windows-reader-dpi-{}", (scale * 100.) as u32),
@@ -1238,6 +1359,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             })??;
             screenshot(&path,"windows-inbox",cx).await?;
             window_chrome(&view,handle,&path,cx).await?;
+            toolbar_widths(&view,handle,&path,cx).await?;
             click(&view,handle,"copy-markdown",false,cx)?;pause(cx).await;
             handle.update(cx,|_,_,cx|{anyhow::ensure!(cx.read_from_clipboard().and_then(|v|v.text()).is_some_and(|s|s.contains("final review")),"Markdown clipboard missing");Ok::<_,anyhow::Error>(())})??;
             // Prepare and check in one update: a core DataChanged event arriving later
@@ -1305,7 +1427,7 @@ pub fn start(view: Entity<MailDesktop>, window: &mut Window, path: PathBuf, cx: 
             // Opt-in long run for the memory curve; synthetic demo mail only.
             let reads=std::env::var("LIGHTMAIL_SOAK_READS").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(0);
             if reads>0 {soak(&view,handle,&path,reads,cx).await?;}
-            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","reader-link-confirm-cancel","reader-link-escape-cancel","reader-link-confirm-once","reader-link-original-url","reader-link-copy","reader-link-long-url-copy","reader-text-link-confirmation","reader-bounded-long-document","reader-keyboard-home-end","reader-cross-region-copy","reader-uia-text-pattern","reader-uia-selected-range","reader-uia-selection-action","reader-native-dpi-transition","reader-native-page-down","remote-image-policy","image-opt-in","clipboard","account-whitespace","account-proxy-mode-controls","account-proxy-persistence","account-proxy-independent-accounts","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
+            Ok::<_,anyhow::Error>(serde_json::json!({"passed":true,"soakReads":reads,"checks":["native-window","application-icons","tray-registered","tray-hide-restore","tray-auto-receive","tray-manual-receive","tray-shell-restart","window-chrome-hit-test","reader-toolbar-width-matrix","reader-toolbar-dpi-hit-test","window-maximize-restore","overlay-drag-margin","mail-row-whitespace","reader-native-text","reader-html-links-images","reader-pane-resize","reader-unicode-mouse-selection","reader-selection-copy","reader-drag-link-no-navigation","reader-link-confirm-cancel","reader-link-escape-cancel","reader-link-confirm-once","reader-link-original-url","reader-link-copy","reader-link-long-url-copy","reader-text-link-confirmation","reader-bounded-long-document","reader-keyboard-home-end","reader-cross-region-copy","reader-uia-text-pattern","reader-uia-selected-range","reader-uia-selection-action","reader-native-dpi-transition","reader-native-page-down","remote-image-policy","image-opt-in","clipboard","account-whitespace","account-proxy-mode-controls","account-proxy-persistence","account-proxy-independent-accounts","translation-settings","storage-settings","draft-persistence","reader-reuse-60","os-credential-roundtrip"],"document":document}))
         }.await;
         let report=match result{Ok(v)=>v,Err(e)=>serde_json::json!({"passed":false,"error":format!("{e:#}")})};
         let _=std::fs::create_dir_all(&path);let _=std::fs::write(path.join("native-acceptance.json"),report.to_string());

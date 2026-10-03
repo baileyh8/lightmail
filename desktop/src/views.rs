@@ -967,7 +967,8 @@ impl MailDesktop {
                 })
                 .border_b_1()
                 .border_color(rgb(LINE))
-                .child(
+                .child(probe(
+                    "archive",
                     Button::new("archive")
                         .when(compact, |button| button.w(px(28.)).p_0().flex_shrink_0())
                         .icon(icon("archive"))
@@ -975,8 +976,10 @@ impl MailDesktop {
                         .ghost()
                         .disabled(!selected)
                         .on_click(cx.listener(|s, _, _, cx| s.move_selected("archive", cx))),
-                )
-                .child(
+                    cx,
+                ))
+                .child(probe(
+                    "trash",
                     Button::new("trash")
                         .when(compact, |button| button.w(px(28.)).p_0().flex_shrink_0())
                         .icon(icon("trash"))
@@ -984,8 +987,9 @@ impl MailDesktop {
                         .ghost()
                         .disabled(!selected)
                         .on_click(cx.listener(|s, _, _, cx| s.move_selected("trash", cx))),
-                )
-                .child(more)
+                    cx,
+                ))
+                .child(probe("reader-more", more, cx))
                 .child(
                     div()
                         .id("reader-toolbar-drag")
@@ -996,7 +1000,8 @@ impl MailDesktop {
                         .h_full()
                         .child(probe_marker("reader-toolbar-drag".into(), cx)),
                 )
-                .child(
+                .child(probe(
+                    "translate",
                     Button::new("translate")
                         .icon(icon("language"))
                         .outline()
@@ -1028,7 +1033,8 @@ impl MailDesktop {
                                 s.translate(false, cx);
                             }
                         })),
-                )
+                    cx,
+                ))
                 .child(probe(
                     "copy-markdown",
                     Button::new("copy-markdown")
