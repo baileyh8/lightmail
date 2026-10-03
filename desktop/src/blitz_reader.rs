@@ -1348,12 +1348,18 @@ mod tests {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
-        let pixel = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-        )
-        .unwrap();
-        let response = pixel.clone();
+        let html = format!(
+            "<html><body style='margin:0'><img src='http://{address}/pixel.png'></body></html>"
+        );
+        assert!(image_sources(&html).contains(&format!("http://{address}/pixel.png")));
+        let platform = Arc::new(DesktopPlatform::default());
+        let blocked = render(&html, 720, false, platform.clone()).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "Rendering without opt-in must not open an image connection"
+        );
+        let response = pixel();
         let server = std::thread::spawn(move || {
             let (mut socket, _) = (0..100)
                 .find_map(|_| match listener.accept() {
@@ -1365,22 +1371,38 @@ mod tests {
                     Err(error) => panic!("image fixture accept failed: {error}"),
                 })
                 .expect("image fixture request did not arrive");
-            let mut request = [0u8; 2048];
-            let _ = socket.read(&mut request);
-            write!(
-                socket,
+            // Windows accepts inherit the listener's nonblocking mode. Wait for
+            // the complete GET before replying instead of ignoring WouldBlock
+            // and racing the client's request with an early response/close.
+            socket.set_nonblocking(false).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                assert!(request.len() < 8192, "image request headers are too large");
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            assert!(request.starts_with(b"GET /pixel.png HTTP/1.1\r\n"));
+            let mut reply = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 response.len()
             )
-            .unwrap();
-            socket.write_all(&response).unwrap();
+            .into_bytes();
+            reply.extend_from_slice(&response);
+            socket.write_all(&reply).unwrap();
         });
-        let html = format!("<html><body><img src='http://{address}/pixel.png'></body></html>");
-        assert!(image_sources(&html).contains(&format!("http://{address}/pixel.png")));
-        let platform = Arc::new(DesktopPlatform::default());
-        let blocked = render(&html, 720, false, platform.clone()).unwrap();
         let allowed = render(&html, 720, true, platform).unwrap();
         server.join().unwrap();
-        assert!(allowed.height >= blocked.height);
+        let png = image::load_from_memory(&allowed.image.bytes)
+            .unwrap()
+            .into_rgba8();
+        assert_eq!(png.get_pixel(32, 48).0, [0, 128, 0, 255]);
+        assert!(allowed.height >= blocked.height + 80.);
     }
 }
