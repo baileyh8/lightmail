@@ -8,6 +8,8 @@ use std::{
 pub enum Event {
     Core(ApplicationEvent),
     Translation(u64, u32, u32),
+    /// A reader image settled; only a redraw is needed.
+    Image,
 }
 pub struct Events {
     queue: Mutex<VecDeque<(String, Event)>>,
@@ -33,6 +35,9 @@ impl Events {
         }
         drop(queue);
         let _ = self.wake.try_send(());
+    }
+    pub fn image_ready(&self) {
+        self.push("image".into(), Event::Image);
     }
     pub fn drain(&self) -> Vec<Event> {
         self.queue

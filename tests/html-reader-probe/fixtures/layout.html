@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body { margin:0; font:16px sans-serif; color:#202724; }
+.card { width:640px; max-width:100%; border-collapse:collapse; }
+.card td { padding:16px; vertical-align:top; }
+.brand { background:#226451; color:white; }
+.receipt { width:100%; border-collapse:collapse; }
+.receipt td { border:1px solid #69736e; padding:8px; }
+p { margin:0 0 12px; line-height:1.5; }
+@media (max-width:480px) { .card td { padding:8px; } .brand { font-size:20px; } }
+</style></head><body>
+<table class="card" role="presentation"><tr><td class="brand" id="brand">轻邮 · 本地合成账单</td></tr>
+<tr><td><p id="first">第一段：本月服务已完成。</p><p id="second">第二段：下面是账单明细。</p>
+<table class="receipt" id="receipt">
+<tr><td id="item">项目</td><td id="amount">金额</td></tr>
+<tr><td rowspan="2" id="spanrows">服务</td><td id="rowone">20.00</td></tr>
+<tr><td id="rowtwo">10.00</td></tr>
+<tr><td colspan="2" id="spancols">合计 30.00</td></tr>
+</table>
+<p id="breaks">第一行<br>第二行<br>第三行</p>
+<p><a id="action" href="https://example.invalid/verify?t=a%2Bb%3D&amp;next=%2Finbox">查看合成账单</a></p>
+</td></tr></table></body></html>

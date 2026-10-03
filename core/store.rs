@@ -47,6 +47,38 @@ impl MailEngine {
         }
         Ok(d)
     }
+    /// Records the user's own check of an interrupted submission. Only
+    /// delivery_unknown drafts change, and neither outcome submits anything:
+    /// a confirmed delivery becomes accepted, otherwise the draft is editable again.
+    pub fn resolve_delivery(&self, id: &str, delivered: bool) -> Result<Draft> {
+        let db = self.connection()?;
+        let json: String = db
+            .query_row(
+                "SELECT data FROM drafts WHERE id=?1 AND status='delivery_unknown'",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(|_| fail("此邮件不是结果待确认状态"))?;
+        let mut d: Draft = decode(json)?;
+        d.status = if delivered { "accepted" } else { "draft" }.into();
+        d.last_error = if delivered {
+            "已在服务端确认送达".into()
+        } else {
+            "已在服务端确认未送达，邮件已退回草稿".into()
+        };
+        d.send_after = 0;
+        d.updated_at = now();
+        let n = db
+            .execute(
+                "UPDATE drafts SET status=?1,updated=?2,data=?3 WHERE id=?4 AND status='delivery_unknown'",
+                params![d.status, d.updated_at, encode(&d)?, d.id],
+            )
+            .map_err(fail)?;
+        if n != 1 {
+            return Err(fail("发送状态已经改变"));
+        }
+        Ok(d)
+    }
     pub(crate) fn put_message(db: &Connection, m: &MessageSummary) -> Result<()> {
         let mut merged = m.clone();
         if merged.snippet.is_empty() {
@@ -273,16 +305,7 @@ impl MailEngine {
         result
     }
     pub fn save_account(&self, account: Account) -> Result<()> {
-        if account.id.is_empty()
-            || !account.address.contains('@')
-            || account.imap_host.contains(['\r', '\n', '/'])
-            || account.smtp_host.contains(['\r', '\n', '/'])
-        {
-            return Err(fail("邮箱配置不完整"));
-        }
-        self.connection()?.execute("INSERT INTO accounts VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",params![account.id,encode(&account)?]).map_err(fail)?;
-        self.pool.invalidate(&account.id);
-        Ok(())
+        self.save_account_record(account, None)
     }
     pub fn remove_account(&self, account_id: String) -> Result<()> {
         self.pool.invalidate(&account_id);
@@ -313,6 +336,11 @@ impl MailEngine {
         }
         tx.execute("DELETE FROM accounts WHERE id=?1", [&account_id])
             .map_err(fail)?;
+        tx.execute(
+            "DELETE FROM settings WHERE key=?1",
+            [crate::account_proxy::setting_key(&account_id)],
+        )
+        .map_err(fail)?;
         tx.execute(
             "DELETE FROM settings WHERE key LIKE ?1",
             [format!("translation:{}:%", account_id)],

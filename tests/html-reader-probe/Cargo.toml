@@ -1,0 +1,31 @@
+[package]
+name = "lightmail-html-reader-probe"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+# Research only: keep dependencies and lockfile outside the application workspace.
+[workspace]
+
+[features]
+core-input = ["dep:lightmail_core", "dep:tempfile"]
+
+[dependencies]
+litehtml = { path = "../../.tooling/litehtml-research/litehtml", features = ["pixbuf"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+lightmail_core = { path = "../..", optional = true }
+tempfile = { version = "3", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[patch.crates-io]
+imap-proto = { path = "../../third_party/imap-proto" }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

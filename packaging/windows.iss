@@ -18,6 +18,7 @@ OutputBaseFilename=Lightmail-v{#AppVersion}-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\Resources\AppIcon.ico
 UninstallDisplayIcon={app}\Lightmail.exe
 CloseApplications=yes
 LicenseFile=..\LICENSE
@@ -26,8 +27,11 @@ Source: "..\target\release\Lightmail.exe"; DestDir: "{app}"; Flags: ignoreversio
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\packaging\windows-readme.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 [Icons]
-Name: "{group}\Lightmail"; Filename: "{app}\Lightmail.exe"
+Name: "{group}\Lightmail"; Filename: "{app}\Lightmail.exe"; IconFilename: "{app}\Lightmail.exe"; IconIndex: 0
+Name: "{autodesktop}\Lightmail"; Filename: "{app}\Lightmail.exe"; IconFilename: "{app}\Lightmail.exe"; IconIndex: 0; Tasks: desktopicon
 [Run]
 Filename: "{app}\Lightmail.exe"; Description: "Open Lightmail"; Flags: nowait postinstall skipifsilent
 ; Intentionally no UninstallDelete entries: preserve mail, drafts, and settings.

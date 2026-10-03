@@ -1,14 +1,24 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
-use gpui::{prelude::*, *};
-use gpui_component::{Root, Theme, ThemeMode};
+use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::{prelude::*, *};
 #[cfg(feature = "acceptance")]
 mod acceptance;
 mod app;
 mod assets;
+mod blitz_reader;
 mod events;
+mod image_types;
+mod images;
+mod instance;
+#[cfg(windows)]
+mod oauth_browser;
 mod platform;
+mod reader;
 mod shortcuts;
+#[cfg(windows)]
+mod tray;
 mod views;
+mod window_chrome;
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--version") {
@@ -44,27 +54,55 @@ fn main() {
             .data_local_dir()
             .to_path_buf()
     });
-    let engine = lightmail_core::MailEngine::new(
-        root.join(if demo { "Preview" } else { "Mail" })
-            .to_string_lossy()
-            .into_owned(),
-    )
-    .expect("Open local mail database");
+    let directory = root.join(if demo { "Preview" } else { "Mail" });
+    // Held until the process exits, beyond Application::run.
+    let _instance = match instance::DirectoryLock::acquire_within(
+        &directory,
+        std::time::Duration::from_secs(3),
+    ) {
+        Ok(lock) => lock,
+        Err(error) => {
+            let running = error.kind() == std::io::ErrorKind::WouldBlock;
+            #[cfg(windows)]
+            if running && tray::activate_existing(&directory) {
+                return;
+            }
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Info)
+                .set_title("轻邮 Lightmail")
+                .set_description(if running {
+                    "轻邮已经在运行。同一个邮箱数据目录只能由一个窗口打开。".to_string()
+                } else {
+                    format!("无法打开邮箱数据目录：{error}")
+                })
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
+            std::process::exit(if running { 0 } else { 1 });
+        }
+    };
+    let engine = lightmail_core::MailEngine::new(directory.to_string_lossy().into_owned())
+        .expect("Open local mail database");
     if demo {
         engine.seed_demo().expect("Prepare synthetic demo");
     }
-    Application::new()
+    gpui_kit::application()
         .with_assets(assets::Assets)
         .run(move |cx| {
-            gpui_component::init(cx);
+            gpui_kit::init(cx);
             shortcuts::bind(cx);
             Theme::change(ThemeMode::Light, None, cx);
-            Theme::global_mut(cx).colors.primary = rgb(0x226451).into();
-            Theme::global_mut(cx).font_size = px(13.);
-            #[cfg(windows)]
-            {
-                Theme::global_mut(cx).font_family = "Microsoft YaHei UI".into();
-            }
+            // Kit's update path keeps component and base theme tokens in sync.
+            Theme::update(cx, |theme| {
+                let accent: Hsla = rgb(0x226451).into();
+                theme.colors.primary = accent;
+                theme.colors.button_primary = accent;
+                theme.colors.ring = accent;
+                theme.font_size = px(13.);
+                #[cfg(windows)]
+                {
+                    theme.font_family = "Microsoft YaHei UI".into();
+                }
+            });
             // Keep the complete window visible on smaller Windows desktops and at
             // larger display scaling factors. Dimensions here are logical pixels.
             let screen = cx
@@ -78,34 +116,49 @@ fn main() {
             let bounds = Bounds::centered(None, initial_size, cx);
             #[cfg(windows)]
             let bounds = platform::initial_window_bounds().unwrap_or(bounds);
-            cx.open_window(
+            gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(
                         px(1040.).min(bounds.size.width),
                         px(640.).min(bounds.size.height),
                     )),
+                    // On Windows the view draws its own title area; see window_chrome.
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("轻邮 Lightmail".into()),
+                        appears_transparent: cfg!(windows),
+                        traffic_light_position: None,
+                    }),
                     ..Default::default()
                 },
+                cx,
                 |window, cx| {
                     window.set_window_title("轻邮 Lightmail");
+                    window_chrome::hide_border(window);
                     #[cfg(feature = "acceptance")]
                     let acceptance_path = acceptance.clone();
                     let view = cx.new(|cx| {
                         app::MailDesktop::new(engine, root, demo, acceptance, window, cx)
                     });
+                    #[cfg(windows)]
+                    if let Err(error) = tray::attach(&view, window, &directory, cx) {
+                        view.update(cx, |s, cx| {
+                            s.status = format!("托盘不可用，关闭窗口将退出：{error}");
+                            cx.notify();
+                        });
+                    }
                     #[cfg(feature = "acceptance")]
                     if run_acceptance && demo {
                         if let Some(path) = acceptance_path {
                             acceptance::start(view.clone(), window, path, cx);
                         }
                     }
-                    cx.new(|cx| Root::new(view, window, cx))
+                    view
                 },
             )
             .expect("Open Lightmail window");
             cx.activate(true);
-            cx.on_window_closed(|cx| {
+            cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
                 }

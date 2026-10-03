@@ -1,15 +1,16 @@
 use crate::app::{date, MailDesktop, Page};
 use crate::shortcuts::*;
-use gpui::{prelude::*, *};
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariants},
-    input::Input,
-    Disableable, Selectable, Sizable,
+    dialog::{Cancel, Confirm, DialogFooter},
+    input::{Input, InputState, Textarea},
+    Disableable, Selectable, Sizable, WindowExt as _,
 };
-use gpui_component::{
+use gpui_kit::component::{
     menu::{DropdownMenu, PopupMenuItem},
     Icon,
 };
+use gpui_kit::{prelude::*, *};
 use lightmail_core::*;
 
 const INK: u32 = 0x202724;
@@ -35,6 +36,12 @@ fn short_date(ts: i64) -> String {
             .to_string()
         })
         .unwrap_or_default()
+}
+/// Kit sizes single-line inputs 2rem tall with fixed 8px vertical padding and a
+/// 1.25rem line. At Lightmail's 13px rem that leaves under 10px for the text
+/// line and cuts glyphs top and bottom, so single-line inputs get an explicit box.
+fn line_input(input: Input, height: f32) -> Input {
+    Styled::h(input.py(px(4.)), px(height))
 }
 fn column() -> Div {
     div().flex().flex_col().flex_shrink_0().min_w_0().min_h_0()
@@ -70,7 +77,9 @@ fn folder_name(f: &Folder) -> String {
 
 // Geometry probes are active only in isolated demo acceptance runs.
 fn probe_marker(name: String, cx: &Context<MailDesktop>) -> impl IntoElement {
-    let weak = cx.entity().downgrade();
+    probe_marker_for(name, cx.entity().downgrade())
+}
+fn probe_marker_for(name: String, weak: WeakEntity<MailDesktop>) -> impl IntoElement {
     canvas(
         move |bounds, _, cx| {
             let _ = weak.update(cx, |s, _| {
@@ -87,12 +96,148 @@ fn probe_marker(name: String, cx: &Context<MailDesktop>) -> impl IntoElement {
     .size_full()
 }
 fn probe(name: &str, element: impl IntoElement, cx: &Context<MailDesktop>) -> Div {
+    probe_for(name, element, cx.entity().downgrade())
+}
+fn probe_for(name: &str, element: impl IntoElement, view: WeakEntity<MailDesktop>) -> Div {
     div()
         .relative()
         .child(element)
-        .child(probe_marker(name.into(), cx))
+        .child(probe_marker_for(name.into(), view))
 }
 impl MailDesktop {
+    pub fn show_reader_link_confirmation(
+        &self,
+        href: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let parsed = url::Url::parse(&href).expect("Reader link was validated");
+        let web = matches!(parsed.scheme(), "http" | "https");
+        let destination = parsed.host_str().map(str::to_owned);
+        let address = cx.new(|cx| {
+            let mut state = InputState::new(window, cx);
+            state.set_value(href.clone(), window, cx);
+            state
+        });
+        let copied = std::rc::Rc::new(std::cell::Cell::new(false));
+        let view = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let confirmed_view = view.clone();
+            let confirmed_href = href.clone();
+            let closed_view = view.clone();
+            let closed_href = href.clone();
+            let focused_address = address.clone();
+            let copy_view = view.clone();
+            let copy_href = href.clone();
+            let copy_feedback = copied.clone();
+            alert
+                .title(if web {
+                    "打开邮件中的链接？"
+                } else {
+                    "打开邮件地址？"
+                })
+                .description(if web {
+                    format!(
+                        "确认后使用系统默认浏览器访问 {}。",
+                        destination.as_deref().unwrap_or_default()
+                    )
+                } else {
+                    "确认后使用系统默认邮件应用打开。".to_owned()
+                })
+                .width(px(560.))
+                .confirm()
+                .child(
+                    row()
+                        .w_full()
+                        .child(
+                            // Kit 0.7's input enforces readonly but its frame
+                            // does not declare it to AccessKit. Own that semantic
+                            // frame here without patching the shared component.
+                            div()
+                                .id("reader-link-address-frame")
+                                .flex_1()
+                                .min_w_0()
+                                .role(Role::TextInput)
+                                .accessibility_id("reader-link-address")
+                                .aria_label("链接完整地址")
+                                .aria_value(href.clone())
+                                .a11y_synthetic_children(|tree| {
+                                    tree.parent_node().set_read_only();
+                                })
+                                .on_a11y_action(AccessibleAction::Focus, move |_, window, cx| {
+                                    focused_address.update(cx, |state, cx| state.focus(window, cx));
+                                })
+                                .child(line_input(
+                                    Input::new(&address)
+                                        .readonly(true)
+                                        .role(None::<Role>)
+                                        .w_full(),
+                                    32.,
+                                )),
+                        )
+                        .child(probe_for(
+                            "reader-link-copy",
+                            Button::new("reader-link-copy")
+                                .label(if copied.get() {
+                                    "已复制"
+                                } else {
+                                    "复制网址"
+                                })
+                                .icon(icon("copy"))
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy_href.clone(),
+                                    ));
+                                    copy_feedback.set(true);
+                                    let _ = copy_view.update(cx, |s, cx| {
+                                        s.record("reader-link-copy");
+                                        cx.notify();
+                                    });
+                                }),
+                            view.clone(),
+                        )),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(probe_for(
+                            "reader-link-cancel",
+                            Button::new("reader-link-cancel").label("取消").on_click(
+                                |_, window, cx| {
+                                    window.dispatch_action(Box::new(Cancel), cx);
+                                },
+                            ),
+                            view.clone(),
+                        ))
+                        .child(probe_for(
+                            "reader-link-confirm",
+                            Button::new("reader-link-confirm")
+                                .label(if web {
+                                    "用默认浏览器打开"
+                                } else {
+                                    "用默认邮件应用打开"
+                                })
+                                .primary()
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(Confirm { secondary: false }),
+                                        cx,
+                                    );
+                                }),
+                            view.clone(),
+                        )),
+                )
+                .on_ok(move |_, _, cx| {
+                    let _ = confirmed_view
+                        .update(cx, |s, cx| s.finish_reader_link(&confirmed_href, true, cx));
+                    true
+                })
+                .on_close(move |_, _, cx| {
+                    let _ = closed_view
+                        .update(cx, |s, cx| s.finish_reader_link(&closed_href, false, cx));
+                })
+        });
+    }
+
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = column()
             .id("sidebar-scroll")
@@ -286,8 +431,12 @@ impl MailDesktop {
             .gap_3()
             .child(
                 row()
+                    .id("brand-drag")
+                    .window_control_area(WindowControlArea::Drag)
+                    .relative()
                     .h(px(70.))
                     .px_3()
+                    .child(probe_marker("brand-drag".into(), cx))
                     .child(icon("plane").size(px(25.)).text_color(rgb(ACCENT)))
                     .child(
                         div()
@@ -342,35 +491,28 @@ impl MailDesktop {
     }
     fn mail_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let draft_list = ["drafts", "outbox"].contains(&self.scope.as_str());
-        let count = if draft_list {
-            self.drafts
-                .iter()
-                .filter(|d| {
-                    (self.account_id.is_empty() || d.account_id == self.account_id)
-                        && (if self.scope == "drafts" {
-                            d.status == "draft"
-                        } else {
-                            ["queued", "sending", "failed", "delivery_unknown"]
-                                .contains(&d.status.as_str())
-                        })
+        // The store's own rules decide which list a draft belongs to.
+        let listed = |d: &Draft| {
+            (self.account_id.is_empty() || d.account_id == self.account_id)
+                && DraftState::of(d).is_some_and(|state| {
+                    if self.scope == "drafts" {
+                        state == DraftState::Draft
+                    } else {
+                        state.in_outbox()
+                    }
                 })
-                .count()
+        };
+        let count = if draft_list {
+            self.drafts.iter().filter(|d| listed(d)).count()
         } else {
             self.messages.len()
         };
         let content = if draft_list {
             let mut list = column().id("draft-list").flex_1().overflow_y_scroll();
-            for draft in self.drafts.iter().filter(|d| {
-                (self.account_id.is_empty() || d.account_id == self.account_id)
-                    && (if self.scope == "drafts" {
-                        d.status == "draft"
-                    } else {
-                        ["queued", "sending", "failed", "delivery_unknown"]
-                            .contains(&d.status.as_str())
-                    })
-            }) {
+            for draft in self.drafts.iter().filter(|d| listed(d)) {
                 let d = draft.clone();
                 let id = d.id.clone();
+                let state = DraftState::of(&d);
                 let mut item =
                     column()
                         .p_4()
@@ -385,29 +527,46 @@ impl MailDesktop {
                             },
                         ))
                         .child(muted(d.to.clone()))
-                        .child(muted(match d.status.as_str() {
-                            "queued" => "等待发送 · 可撤销",
-                            "sending" => "正在提交…",
-                            "failed" => "发送失败",
-                            "delivery_unknown" => "结果待确认，请先检查服务端已发送",
+                        .child(muted(match state {
+                            Some(DraftState::Queued) => "等待发送 · 可撤销",
+                            Some(DraftState::Sending) => "正在提交…",
+                            Some(DraftState::Failed) => "发送失败",
+                            Some(DraftState::DeliveryUnknown) => {
+                                "结果待确认：请先在邮箱网页的已发送中核对"
+                            }
+                            Some(DraftState::Accepted) => "已提交",
                             _ => "本地草稿",
                         }));
-                if d.status == "draft" {
-                    item = item.child(
+                if !d.last_error.is_empty()
+                    && matches!(
+                        state,
+                        Some(DraftState::Failed | DraftState::DeliveryUnknown)
+                    )
+                {
+                    item = item.child(muted(d.last_error.clone()));
+                }
+                let mut actions = row();
+                if state.is_some_and(DraftState::editable) {
+                    let draft = d.clone();
+                    actions = actions.child(
                         Button::new(SharedString::from(format!("edit-{id}")))
                             .label("继续编辑")
                             .on_click(
-                                cx.listener(move |s, _, w, cx| s.edit_draft(d.clone(), w, cx)),
+                                cx.listener(move |s, _, w, cx| s.edit_draft(draft.clone(), w, cx)),
                             ),
                     );
-                } else if d.status == "failed" {
-                    item = item.child(
+                }
+                if state.is_some_and(DraftState::retryable) {
+                    let id = id.clone();
+                    actions = actions.child(
                         Button::new(SharedString::from(format!("retry-{id}")))
                             .label("重试发送")
                             .on_click(cx.listener(move |s, _, _, cx| s.retry_send(id.clone(), cx))),
                     );
-                } else if d.status == "queued" {
-                    item = item.child(
+                }
+                if state.is_some_and(DraftState::withdrawable) {
+                    let id = id.clone();
+                    actions = actions.child(
                         Button::new(SharedString::from(format!("undo-{id}")))
                             .label("撤销发送")
                             .on_click(
@@ -415,6 +574,39 @@ impl MailDesktop {
                             ),
                     );
                 }
+                // Only the user can settle an interrupted submission, after checking
+                // the server; neither choice sends anything.
+                if state.is_some_and(DraftState::resolvable) {
+                    let delivered = id.clone();
+                    let returned = id.clone();
+                    actions = actions
+                        .child(
+                            Button::new(SharedString::from(format!("delivered-{id}")))
+                                .label("已确认送达")
+                                .on_click(cx.listener(move |s, _, _, cx| {
+                                    s.resolve_delivery(delivered.clone(), true, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("returned-{id}")))
+                                .label("未送达，退回草稿")
+                                .on_click(cx.listener(move |s, _, _, cx| {
+                                    s.resolve_delivery(returned.clone(), false, cx)
+                                })),
+                        );
+                }
+                if state == Some(DraftState::Draft) {
+                    let id = id.clone();
+                    actions = actions.child(
+                        Button::new(SharedString::from(format!("delete-{id}")))
+                            .label("删除草稿")
+                            .ghost()
+                            .on_click(
+                                cx.listener(move |s, _, _, cx| s.delete_draft(id.clone(), cx)),
+                            ),
+                    );
+                }
+                item = item.child(actions);
                 list = list.child(item);
             }
             list.into_any_element()
@@ -532,7 +724,7 @@ impl MailDesktop {
                                         .bg(rgb(LINE)),
                                 )
                                 .on_click(cx.listener(move |s, event: &ClickEvent, window, cx| {
-                                    window.focus(&s.focus);
+                                    window.focus(&s.focus, cx);
                                     s.select(id.clone(), cx);
                                     if event.click_count() > 1 {
                                         s.focus_reading = true;
@@ -562,11 +754,17 @@ impl MailDesktop {
                         row()
                             .child(
                                 div()
+                                    .id("list-title-drag")
+                                    .window_control_area(WindowControlArea::Drag)
+                                    .relative()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_size(px(21.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(self.title.clone()),
+                                    .child(self.title.clone())
+                                    .child(probe_marker("list-title-drag".into(), cx)),
                             )
-                            .child(div().flex_1())
                             .child(
                                 Button::new("refresh")
                                     .icon(icon("refresh"))
@@ -575,13 +773,14 @@ impl MailDesktop {
                                     .on_click(cx.listener(|s, _, _, cx| s.refresh(cx))),
                             ),
                     )
-                    .child(
+                    .child(line_input(
                         Input::new(&self.fields["search"])
                             .small()
                             .prefix(icon("search"))
                             .bg(rgb(0xf3f5f3))
                             .text_size(px(12.)),
-                    )
+                        28.,
+                    ))
                     .child(
                         row()
                             .child(
@@ -663,9 +862,11 @@ impl MailDesktop {
             })
             .child(
                 row()
+                    .relative()
                     .p_3()
                     .border_t_1()
                     .border_color(rgb(LINE))
+                    .child(probe_marker("list-footer".into(), cx))
                     .child(muted("最近邮件 · 正文按需读取").text_size(px(10.)))
                     .child(div().flex_1())
                     .when(self.page_offset > 0, |v| {
@@ -725,7 +926,7 @@ impl MailDesktop {
                 )
                 .separator()
                 .item(
-                    PopupMenuItem::new("切换原始排版 / 清爽阅读").on_click(move |_, _, cx| {
+                    PopupMenuItem::new("切换简化 HTML / 清爽阅读").on_click(move |_, _, cx| {
                         let _ = layout.update(cx, |s, cx| {
                             s.plain_reading = !s.plain_reading;
                             s.mode = ExportMode::Original;
@@ -747,6 +948,7 @@ impl MailDesktop {
                 .h(px(64.))
                 .flex_shrink_0()
                 .px_5()
+                .pr(px(crate::window_chrome::RESERVE.max(20.)))
                 .when(self.focus_reading, |bar| {
                     bar.child(Button::new("back-list").label("返回列表").ghost().on_click(
                         cx.listener(|s, _, _, cx| {
@@ -774,7 +976,15 @@ impl MailDesktop {
                         .on_click(cx.listener(|s, _, _, cx| s.move_selected("trash", cx))),
                 )
                 .child(more)
-                .child(div().flex_1())
+                .child(
+                    div()
+                        .id("reader-toolbar-drag")
+                        .window_control_area(WindowControlArea::Drag)
+                        .relative()
+                        .flex_1()
+                        .h_full()
+                        .child(probe_marker("reader-toolbar-drag".into(), cx)),
+                )
                 .child(
                     Button::new("translate")
                         .icon(icon("language"))
@@ -919,11 +1129,27 @@ impl MailDesktop {
                             })),
                     )
                     .into_any_element()
-            } else if let Some(reader) = &self.reader {
+            } else if let Some(document) = &self.reader {
+                let mode = match self.mode {
+                    ExportMode::Original => "original",
+                    ExportMode::Translated => "translated",
+                    ExportMode::Bilingual => "bilingual",
+                };
+                let layout = if self.plain_reading {
+                    "markdown"
+                } else {
+                    "html"
+                };
                 div()
                     .relative()
                     .size_full()
-                    .child(reader.clone())
+                    .child(crate::reader::view(
+                        &format!("{}:{mode}:{layout}", message.id),
+                        document,
+                        self.image_policy(),
+                        self,
+                        cx,
+                    ))
                     .child(probe_marker("reader-viewport".into(), cx))
                     .into_any_element()
             } else {
@@ -932,7 +1158,27 @@ impl MailDesktop {
                     .child(muted("这封邮件暂无可显示正文"))
                     .into_any_element()
             };
-            panel = panel.child(div().flex_1().min_h_0().px(px(36.)).child(content));
+            let reader = cx.entity().downgrade();
+            let geometry = canvas(
+                move |bounds, window, cx| {
+                    let _ = reader.update(cx, |s, cx| {
+                        s.measure_reader(bounds, window.scale_factor(), cx)
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full();
+            panel = panel.child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .px(px(36.))
+                    .child(div().relative().size_full().child(content).child(geometry)),
+            );
             if let Some(body) = &self.body {
                 if !body.attachments.is_empty() {
                     let mut files = row().px(px(36.)).py_2();
@@ -1003,7 +1249,20 @@ impl MailDesktop {
         column()
             .gap_2()
             .child(muted(label.to_string()))
-            .child(Input::new(&self.fields[key]))
+            .child(match self.areas.get(key) {
+                Some(area) => Textarea::new(area).into_any_element(),
+                None => line_input(
+                    Input::new(&self.fields[key])
+                        .disabled(self.page == Page::Accounts && self.busy)
+                        .readonly(
+                            self.page == Page::Accounts
+                                && self.editing.is_some()
+                                && ["address", "imap", "imap_port"].contains(&key),
+                        ),
+                    30.,
+                )
+                .into_any_element(),
+            })
     }
     fn settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = column().flex_1().h_full().child(
@@ -1059,6 +1318,7 @@ impl MailDesktop {
                         .on_click(cx.listener(|s, _, _, cx| {
                             s.page = Page::Mail;
                             s.record("settings-close");
+                            s.cancel_account_login(cx);
                             cx.notify();
                         })),
                     cx,
@@ -1131,6 +1391,7 @@ impl MailDesktop {
                     Button::new(label)
                         .label(label)
                         .when(self.provider == p, |b| b.primary())
+                        .disabled(self.busy || self.editing.is_some())
                         .on_click(cx.listener(move |s, _, w, cx| s.apply_preset(p.into(), w, cx))),
                 );
             }
@@ -1138,14 +1399,80 @@ impl MailDesktop {
                 .child(providers)
                 .child(self.field("name", "显示名称"))
                 .child(self.field("address", "邮箱地址"));
+            if self.editing.is_some() {
+                form = form.child(muted("邮箱身份和收件服务器固定；连接另一个邮箱请添加新账号，原邮件和草稿会保留。").text_xs());
+            }
+            let mut routes = row().gap_2();
+            for (label, id, mode) in [
+                ("跟随系统", "account-proxy-system", AccountProxyMode::System),
+                (
+                    "不使用代理",
+                    "account-proxy-direct",
+                    AccountProxyMode::Direct,
+                ),
+                ("HTTP 代理", "account-proxy-http", AccountProxyMode::Http),
+                (
+                    "SOCKS5 代理",
+                    "account-proxy-socks5",
+                    AccountProxyMode::Socks5,
+                ),
+            ] {
+                routes = routes.child(probe(
+                    id,
+                    Button::new(id)
+                        .label(label)
+                        .selected(self.proxy_mode == mode)
+                        .disabled(self.busy)
+                        .on_click(cx.listener(move |s, _, _, cx| {
+                            s.proxy_mode = mode;
+                            cx.notify();
+                        })),
+                    cx,
+                ));
+            }
+            let manual_proxy = matches!(
+                self.proxy_mode,
+                AccountProxyMode::Http | AccountProxyMode::Socks5
+            );
+            form = form.child(
+                column()
+                    .gap_2()
+                    .child(muted("此邮箱的连接代理"))
+                    .child(routes)
+                    .when(manual_proxy, |col| {
+                        col.child(
+                            row()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(self.field("proxy_host", "代理主机")),
+                                )
+                                .child(div().w(px(120.)).child(self.field("proxy_port", "端口"))),
+                        )
+                    })
+                    .child(
+                        muted("适用于此邮箱的收发、附件、外部图片和 Google 授权；本机回调直连。")
+                            .text_xs(),
+                    ),
+            );
+            if self.oauth && self.proxy_mode != AccountProxyMode::System {
+                form = form.child(muted("Google 登录使用独立的 Edge/Chrome 窗口，并遵循此邮箱的代理设置；授权结束后关闭。").text_xs());
+            }
             if self.provider == "gmail" {
                 form = form.child(
                     row()
                         .child(
                             Button::new("oauth-mode")
                                 .label("Google 登录")
+                                .disabled(self.busy)
                                 .selected(self.oauth)
-                                .on_click(cx.listener(|s, _, _, cx| {
+                                .on_click(cx.listener(|s, _, window, cx| {
+                                    // A password typed for app-password sign-in must not
+                                    // travel with a Google sign-in.
+                                    if !s.oauth {
+                                        s.set("password", "", window, cx);
+                                    }
                                     s.oauth = true;
                                     cx.notify();
                                 })),
@@ -1153,6 +1480,7 @@ impl MailDesktop {
                         .child(
                             Button::new("password-mode")
                                 .label("应用专用密码")
+                                .disabled(self.busy)
                                 .selected(!self.oauth)
                                 .on_click(cx.listener(|s, _, _, cx| {
                                     s.oauth = false;
@@ -1234,6 +1562,17 @@ impl MailDesktop {
                             )
                         }),
                 );
+            if self.busy {
+                form = form.child(
+                    Button::new("cancel-account-login")
+                        .label("取消邮箱接入")
+                        .on_click(cx.listener(|s, _, _, cx| s.cancel_account_login(cx))),
+                );
+            }
+            if self.demo {
+                form = form
+                    .child(muted("示例设置仅在本地生效；添加真实邮箱请先返回真实模式。").text_xs());
+            }
             if self.editing.is_some() {
                 form = form.child(div().h(px(1.)).bg(rgb(LINE))).child(muted(
                     "移除会清除此设备上的邮箱、缓存、本地草稿和凭证。服务器邮件不会删除。",
@@ -1308,12 +1647,26 @@ impl MailDesktop {
                     .child(form),
             );
         } else if self.page == Page::Storage {
-            let info = self.storage.as_ref();
+            // Figures arrive from a background read; never show zeros meanwhile.
+            let (counts, sizes) = match self.storage.as_ref() {
+                Some(i) => (
+                    format!(
+                        "已同步 {} 封摘要 · 已缓存 {} 封正文",
+                        i.message_count, i.body_count
+                    ),
+                    format!(
+                        "数据库 {:.1} MiB · 正文缓存 {:.1} MiB",
+                        i.database_bytes as f64 / 1048576.,
+                        i.cache_bytes as f64 / 1048576.
+                    ),
+                ),
+                None => ("正在读取存储信息…".into(), String::new()),
+            };
             root=root.child(column().p_7().gap_5().child(title("本地存储"))
-                .child(muted(format!("已同步 {} 封摘要 · 已缓存 {} 封正文",info.map(|i|i.message_count).unwrap_or(0),info.map(|i|i.body_count).unwrap_or(0))))
-                .child(muted(format!("数据库 {:.1} MiB · 正文缓存 {:.1} MiB",info.map(|i|i.database_bytes).unwrap_or(0)as f64/1048576.,info.map(|i|i.cache_bytes).unwrap_or(0)as f64/1048576.)))
+                .child(muted(counts))
+                .child(muted(sizes))
                 .child(muted("每个邮箱预加载最新 20 封。新邮件到达后释放更早的正文，保留摘要；旧正文和附件按需读取。"))
-                .child(row().child(Button::new("clear-cache").label("清理正文缓存").on_click(cx.listener(|s,_,_,cx|s.clear_cache(cx)))).child(Button::new("import-mail").label("导入 .eml 邮件").on_click(cx.listener(|s,_,_,cx|s.import_mail(cx)))))
+                .child(row().child(Button::new("clear-cache").label("清理正文缓存").disabled(self.busy).on_click(cx.listener(|s,_,_,cx|s.clear_cache(cx)))).child(Button::new("import-mail").label("导入 .eml 邮件").on_click(cx.listener(|s,_,_,cx|s.import_mail(cx)))))
                 .child(muted("账号授权码和 API Key 保存在 Windows 凭据管理器。卸载应用时保留邮件数据，避免误删。")));
         } else {
             let mut profiles = column()
@@ -1402,13 +1755,38 @@ impl MailDesktop {
                 ),
         )
     }
+    fn window_chrome(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        let mut chrome = div()
+            .flex()
+            .absolute()
+            .top_0()
+            .right_0()
+            .h(px(crate::window_chrome::HEIGHT))
+            // Header drag areas painted earlier must never claim the controls.
+            .occlude();
+        for (name, control) in crate::window_chrome::controls(window, cx) {
+            chrome = chrome.child(probe(name, control, cx));
+        }
+        chrome
+    }
     fn welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
         column()
+            .relative()
             .flex_1()
             .h_full()
             .items_center()
             .justify_center()
             .gap_5()
+            .child(
+                div()
+                    .id("welcome-drag")
+                    .window_control_area(WindowControlArea::Drag)
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right(px(crate::window_chrome::WIDTH))
+                    .h(px(64.)),
+            )
             .child(icon("plane").size(px(48.)).text_color(rgb(ACCENT)))
             .child(
                 div()
@@ -1473,7 +1851,10 @@ impl MailDesktop {
                 .border_b_1()
                 .border_color(rgb(LINE))
                 .child(muted(label).w(px(60.)).flex_shrink_0())
-                .child(Input::new(&self.fields[key]).appearance(false).flex_1())
+                .child(line_input(
+                    Input::new(&self.fields[key]).appearance(false).flex_1(),
+                    30.,
+                ))
         };
         column()
             .flex_1()
@@ -1536,7 +1917,7 @@ impl MailDesktop {
             )
             .child(
                 div().flex_1().min_h_0().px_6().py_4().child(
-                    Input::new(&self.fields["draft_body"])
+                    Textarea::new(&self.areas["draft_body"])
                         .appearance(false)
                         .text_size(px(15.))
                         .h_full(),
@@ -1613,7 +1994,7 @@ impl Render for MailDesktop {
             self.clear_secrets = false;
         }
         self.service.set_active(window.is_window_active());
-        self.update_reader(window, cx);
+        self.update_reader(cx);
         let settings = matches!(
             self.page,
             Page::Accounts | Page::Translation | Page::Storage
@@ -1646,6 +2027,7 @@ impl Render for MailDesktop {
             .on_action(cx.listener(|s, _: &Settings, w, cx| s.open_accounts(None, w, cx)))
             .on_action(cx.listener(|s, _: &ImportMail, _, cx| s.import_mail(cx)))
             .on_action(cx.listener(|s, _: &ClosePanel, _, cx| {
+                s.cancel_account_login(cx);
                 s.persist_compose(cx);
                 s.page = Page::Mail;
                 s.focus_reading = false;
@@ -1670,10 +2052,15 @@ impl Render for MailDesktop {
                     .child(column().flex_1().h_full().child(content)),
             )
             .when(settings || composing, |root| {
+                // The dimmed margin moves the window and keeps the dialog clear of the
+                // controls; the dialog occludes it, so its own clicks stay clicks.
                 root.child(
                     div()
+                        .id("overlay-drag")
+                        .window_control_area(WindowControlArea::Drag)
                         .absolute()
                         .inset_0()
+                        .p(px(crate::window_chrome::HEIGHT))
                         .bg(rgba(0x20272433))
                         .occlude()
                         .flex()
@@ -1685,6 +2072,8 @@ impl Render for MailDesktop {
                                 .max_w_full()
                                 .h(px(if composing { 670. } else { 700. }))
                                 .max_h_full()
+                                .relative()
+                                .occlude()
                                 .rounded(px(16.))
                                 .overflow_hidden()
                                 .bg(rgb(0xffffff))
@@ -1695,7 +2084,8 @@ impl Render for MailDesktop {
                                     self.compose_panel(cx).into_any_element()
                                 } else {
                                     self.settings_panel(cx).into_any_element()
-                                }),
+                                })
+                                .child(probe_marker("overlay-panel".into(), cx)),
                         ),
                 )
             })
@@ -1705,6 +2095,8 @@ impl Render for MailDesktop {
                         .absolute()
                         .bottom(px(16.))
                         .right(px(16.))
+                        // Above the dimmed margin, the note keeps its own clicks.
+                        .occlude()
                         .max_w(px(600.))
                         .rounded_md()
                         .bg(rgb(SELECTED))
@@ -1726,5 +2118,7 @@ impl Render for MailDesktop {
                         ),
                 )
             })
+            // Last, so the controls stay above dialogs and notes.
+            .child(self.window_chrome(window, cx))
     }
 }

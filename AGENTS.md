@@ -5,7 +5,7 @@
 Lightmail pairs a native macOS/Windows interfaces with shared Rust services through UniFFI on macOS.
 
 - `Sources/Lightmail/`: SwiftUI/AppKit views, presentation state, OS adapters, and Swift test harnesses.
-- `desktop/`: Windows GPUI views, WebView2 host, OS adapters, and CI acceptance.
+- `desktop/`: Windows GPUI Kit views, native reader, window chrome, OS adapters, and CI acceptance.
 - `core/`: application services, OAuth, translation, composition, protocols, SQLite, caching, and Rust tests.
 - `examples/headless.rs`: portable service consumer without a UI.
 - `Generated/FFI/` and `Sources/Lightmail/Generated/`: generated bindings; regenerate rather than edit manually.
@@ -15,7 +15,7 @@ Lightmail pairs a native macOS/Windows interfaces with shared Rust services thro
 
 ## Build, Test, and Development Commands
 
-macOS needs Apple Silicon, macOS 15+, Swift 6+, Rust, and Python 3. Windows needs Rust, MSVC, Windows SDK, and WebView2.
+macOS needs Apple Silicon, macOS 15+, Swift 6+, Rust, and Python 3. Windows needs Rust 1.97+, MSVC, and the Windows SDK (its fxc compiles GPUI shaders).
 
 - `bash scripts/bootstrap-rust.sh`: install project-local Rust if needed.
 - `bash scripts/build.sh`: build Rust, regenerate bindings, compile and sign `dist/轻邮.app`.
@@ -24,6 +24,8 @@ macOS needs Apple Silicon, macOS 15+, Swift 6+, Rust, and Python 3. Windows need
 - `cargo run --locked --example headless -- build/headless-demo`: exercise shared services without Swift.
 - `./scripts/build-windows.ps1`: build the Windows client.
 - `./scripts/package-windows.ps1`: create installer and portable ZIP.
+- `./scripts/check-windows.ps1`: native UI acceptance (build with `--features acceptance` first), then a silent install and uninstall under `build/windows-acceptance`; `-SoakReads N` adds a memory soak.
+- Use `-SkipInstaller` when Lightmail is already installed for this user; a different `/DIR` does not isolate the installer's AppId, shortcut or uninstall registration. `-Executable` and `-OutputDirectory build/...` allow a separate test binary and fixture directory.
 - `bash scripts/package.sh`: generate ZIP and checksums.
 
 ## Architecture Boundaries
