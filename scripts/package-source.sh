@@ -10,7 +10,8 @@ if [ -e "$STAGE" ]; then
 fi
 mkdir -p "$STAGE/.cargo" dist
 git archive HEAD | tar -x -C "$STAGE"
-bash scripts/cargo.sh vendor --locked "$STAGE/vendor" > build/vendor-config.toml
+python3 scripts/prepare-source-vendor.py "$STAGE"
+bash scripts/cargo.sh vendor --locked --manifest-path "$STAGE/Cargo.toml" "$STAGE/vendor" > build/vendor-config.toml
 # Keep cargo's Git-source mappings as well as crates.io. The archive is moved
 # outside this checkout, so every vendored directory must be archive-relative.
 python3 - "$STAGE/.cargo/config.toml" <<'PYTHON'
