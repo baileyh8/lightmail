@@ -1333,3 +1333,154 @@ fn google_signin_waits_for_refresh_writeback_then_preserves_the_new_grant() {
         assert_eq!(final_token.client.unwrap().client_id, "new-signin-client");
     });
 }
+
+#[test]
+fn signin_waits_for_refresh_across_application_and_platform_instances() {
+    // Pause exactly after the compare-read has captured the old grant. A real
+    // sign-in commit on a separate adapter must wait, then leave the NEW client
+    // configuration in the vault. This reproduces the author's narrower race.
+    struct PausedRead {
+        inner: Arc<TestPlatform>,
+        reads: std::sync::atomic::AtomicUsize,
+        captured: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl PlatformServices for PausedRead {
+        fn read_secret(&self, key: String) -> Result<Option<String>> {
+            let snapshot = self.inner.read_secret(key.clone())?;
+            if key.starts_with("account:")
+                && self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+            {
+                self.captured
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .unwrap();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(15))
+                    .map_err(|_| fail("test compare-read was not released"))?;
+            }
+            Ok(snapshot)
+        }
+        fn write_secret(&self, key: String, value: String) -> Result<()> {
+            self.inner.write_secret(key, value)
+        }
+        fn remove_secret(&self, key: String) -> Result<()> {
+            self.inner.remove_secret(key)
+        }
+        fn proxy_for(&self, host: String) -> Result<ProxyRoute> {
+            self.inner.proxy_for(host)
+        }
+    }
+    crate::platform::runtime().block_on(async {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = MailEngine::new(directory.path().to_string_lossy().into()).unwrap();
+        let account = real_account("compare-read-gap", "gmail", "oauth");
+        engine.save_account(account.clone()).unwrap();
+        let server = OAuthFixture::new(&account.address, false);
+        let vault = Arc::new(TestPlatform::default());
+        let key = format!("account:{}", account.id);
+        let expired = serde_json::json!({"accessToken":"expired","refreshToken":"old-grant","expiresAt":0,"client":{"clientId":"old-client","clientSecret":"old-secret"}}).to_string();
+        vault.write_secret(key.clone(), expired.clone()).unwrap();
+        let (captured, snapshot_ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let reader = Arc::new(PausedRead { inner: vault.clone(), reads: Default::default(), captured: Mutex::new(Some(captured)), release: Mutex::new(wait) });
+        let mut app = MailApplication::new(engine.clone(), reader, Arc::new(Events::default()));
+        Arc::get_mut(&mut app).unwrap().oauth_endpoints = server.endpoints();
+        let refreshed = tokio::spawn(async move { app.credential("compare-read-gap").await });
+        tokio::time::timeout(Duration::from_secs(5), snapshot_ready).await.unwrap().unwrap();
+        let mut second_app = MailApplication::new(engine.clone(), vault.clone(), Arc::new(Events::default()));
+        Arc::get_mut(&mut second_app).unwrap().oauth_endpoints = server.endpoints();
+        let mut second_refresh = tokio::spawn(async move { second_app.credential("compare-read-gap").await });
+        let second_waiting = tokio::time::timeout(Duration::from_millis(100), &mut second_refresh).await;
+        let signer = MailApplication::new(engine, vault.clone(), Arc::new(Events::default()));
+        let mut login = signer.begin_google_login(account, "new-client".into(), AccountProxySettings::default()).unwrap();
+        Arc::get_mut(&mut login).unwrap().endpoints = server.endpoints();
+        let url = url::Url::parse(&login.authorization_url()).unwrap();
+        let params: HashMap<_, _> = url.query_pairs().into_owned().collect();
+        let callback = format!("{}?state={}&code=synthetic", params["redirect_uri"], params["state"]);
+        let mut signed_in = tokio::spawn(signer.finish_google_login(login, "new-secret".into(), AccountProxySettings::default()));
+        reqwest::Client::builder().no_proxy().build().unwrap().get(callback).send().await.unwrap();
+        // A bounded negative completion check, while the barrier holds the
+        // refresh inside its critical section; no random race-inducing sleep.
+        let waiting = tokio::time::timeout(Duration::from_secs(1), &mut signed_in).await;
+        let before_release = vault.read_secret(key.clone()).unwrap().unwrap();
+        release.send(()).unwrap();
+        assert!(second_waiting.is_err(), "another service refreshed the same vault entry concurrently");
+        assert!(waiting.is_err(), "sign-in commit bypassed the shared account lock");
+        assert_eq!(before_release, expired);
+        refreshed.await.unwrap().unwrap();
+        second_refresh.await.unwrap().unwrap();
+        signed_in.await.unwrap().unwrap();
+        let token: crate::auth::GoogleTokens = serde_json::from_str(&vault.read_secret(key).unwrap().unwrap()).unwrap();
+        assert_eq!(token.client.as_ref().unwrap().client_id, "new-client");
+        assert_eq!(token.client.as_ref().unwrap().client_secret, "new-secret");
+        assert_eq!(server.requests.lock().unwrap().len(), 3);
+    });
+}
+
+#[test]
+fn google_login_rejects_foreign_sessions_and_changed_proxy_before_exchange() {
+    let (_dir, engine, app, platform, _) = fixture();
+    let account = real_account("prepared-identity", "gmail", "oauth");
+    engine.save_account(account.clone()).unwrap();
+    let key = format!("account:{}", account.id);
+    platform
+        .write_secret(key.clone(), "original-grant".into())
+        .unwrap();
+    let mut changed = account.clone();
+    changed.address = "different@example.com".into();
+    assert!(app
+        .begin_google_login(changed, "client".into(), AccountProxySettings::default())
+        .is_err());
+    let server = OAuthFixture::new(&account.address, false);
+    let mut login = app
+        .begin_google_login(
+            account.clone(),
+            "client".into(),
+            AccountProxySettings::default(),
+        )
+        .unwrap();
+    Arc::get_mut(&mut login).unwrap().endpoints = server.endpoints();
+    let (_other_dir, _, other, _, _) = fixture();
+    let rt = crate::platform::runtime();
+    // Reject before waiting for the loopback callback or exchanging a token.
+    let unprepared = GoogleLogin::new(account, "client".into(), platform.clone()).unwrap();
+    assert!(rt
+        .block_on(app.clone().finish_google_login(
+            unprepared,
+            String::new(),
+            AccountProxySettings::default()
+        ))
+        .is_err());
+    assert!(rt
+        .block_on(other.finish_google_login(
+            login.clone(),
+            String::new(),
+            AccountProxySettings::default()
+        ))
+        .is_err());
+    assert!(rt
+        .block_on(app.finish_google_login(
+            login,
+            String::new(),
+            AccountProxySettings {
+                mode: AccountProxyMode::Direct,
+                ..Default::default()
+            }
+        ))
+        .is_err());
+    assert!(server.requests.lock().unwrap().is_empty());
+    assert_eq!(
+        engine.account("prepared-identity").unwrap().address,
+        "prepared-identity@example.com"
+    );
+    assert_eq!(
+        platform.read_secret(key).unwrap().unwrap(),
+        "original-grant"
+    );
+}
