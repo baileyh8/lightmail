@@ -297,4 +297,25 @@ mod tests {
                 .contains("href=\"javascript:")
         );
     }
+    #[test]
+    fn inline_image_policy_only_opens_images_after_explicit_permission() {
+        let cleaned = crate::mime::clean_html("<img src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='><img src='data:image/svg+xml;base64,PHN2Zz48L3N2Zz4='><a href='data:text/html,bad'>bad</a><script>bad()</script>");
+        assert!(cleaned.contains("data:image/png"));
+        assert!(!cleaned.contains("data:image/svg"));
+        assert!(!cleaned.contains("data:text/html"));
+        let blocked = reader_document(cleaned.clone(), false);
+        let allowed = reader_document(cleaned, true);
+        assert!(blocked.contains("img-src 'none'"));
+        assert!(blocked.contains("img{display:none"));
+        for rule in [
+            "default-src 'none'",
+            "connect-src 'none'",
+            "frame-src 'none'",
+            "form-action 'none'",
+            "base-uri 'none'",
+        ] {
+            assert!(allowed.contains(rule));
+        }
+        assert!(allowed.contains("img-src https: http: data:"));
+    }
 }

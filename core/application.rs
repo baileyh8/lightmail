@@ -38,7 +38,6 @@ pub trait ApplicationObserver: Send + Sync {
     fn changed(&self, event: ApplicationEvent);
 }
 
-#[derive(Default)]
 struct Lane {
     sync: AsyncMutex<()>,
     credential: Arc<AsyncMutex<()>>,
@@ -482,11 +481,16 @@ impl MailApplication {
         if account.auth_kind != "oauth" || account.provider != "gmail" {
             return Err(fail("此账号不是 Google 登录账号"));
         }
-        crate::GoogleLogin::new(
+        let proxy = proxy.validated()?;
+        let mut login = crate::GoogleLogin::new(
             account,
             client_id,
-            proxy.scoped_platform(self.platform.clone())?,
-        )
+            proxy.clone().scoped_platform(self.platform.clone())?,
+        )?;
+        let prepared = Arc::get_mut(&mut login).unwrap();
+        prepared.prepared_proxy = Some(proxy);
+        prepared.prepared_engine = Some(Arc::downgrade(&self.engine));
+        Ok(login)
     }
     pub async fn finish_google_login(
         self: Arc<Self>,
@@ -498,6 +502,15 @@ impl MailApplication {
             .command(async move {
                 self.require_online()?;
                 let proxy = proxy.validated()?;
+                if login.prepared_proxy.as_ref() != Some(&proxy)
+                    || !login
+                        .prepared_engine
+                        .as_ref()
+                        .and_then(std::sync::Weak::upgrade)
+                        .is_some_and(|engine| Arc::ptr_eq(&engine, &self.engine))
+                {
+                    return Err(fail("登录会话不属于此账号应用服务或代理配置已改变"));
+                }
                 let grant = login.exchange(secret).await?;
                 let guard = self
                     .lane(&grant.account.id)
@@ -894,7 +907,13 @@ impl MailApplication {
             .lock()
             .unwrap()
             .entry(id.into())
-            .or_default()
+            .or_insert_with(|| {
+                Arc::new(Lane {
+                    sync: AsyncMutex::new(()),
+                    credential: crate::credentials::account_lock(id),
+                    preload: Notify::new(),
+                })
+            })
             .clone()
     }
     fn stop_account(&self, id: &str) {

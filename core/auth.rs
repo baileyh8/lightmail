@@ -81,6 +81,8 @@ pub struct GoogleLogin {
     verifier: String,
     redirect: String,
     listener: Mutex<Option<std::net::TcpListener>>,
+    pub(crate) prepared_proxy: Option<crate::AccountProxySettings>,
+    pub(crate) prepared_engine: Option<std::sync::Weak<crate::MailEngine>>,
 }
 #[uniffi::export]
 impl GoogleLogin {
@@ -120,6 +122,8 @@ impl GoogleLogin {
             verifier,
             redirect,
             listener: Mutex::new(Some(listener)),
+            prepared_proxy: None,
+            prepared_engine: None,
         }))
     }
     pub fn authorization_url(&self) -> String {

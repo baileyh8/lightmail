@@ -116,11 +116,18 @@ fn main() {
             let bounds = Bounds::centered(None, initial_size, cx);
             #[cfg(windows)]
             let bounds = platform::initial_window_bounds().unwrap_or(bounds);
+            // Hosted Windows runners can start with a 984px client area. The
+            // isolated acceptance window exercises that supported layout on a
+            // larger developer display as well.
+            #[cfg(feature = "acceptance")]
+            let minimum_width = if run_acceptance && demo { 984. } else { 1040. };
+            #[cfg(not(feature = "acceptance"))]
+            let minimum_width = 1040.;
             gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(
-                        px(1040.).min(bounds.size.width),
+                        px(minimum_width).min(bounds.size.width),
                         px(640.).min(bounds.size.height),
                     )),
                     // On Windows the view draws its own title area; see window_chrome.

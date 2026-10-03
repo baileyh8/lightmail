@@ -3,6 +3,7 @@ mod application;
 mod auth;
 mod cache;
 mod composition;
+mod credentials;
 mod html;
 mod markdown;
 mod mime;
